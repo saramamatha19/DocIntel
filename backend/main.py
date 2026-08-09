@@ -12,9 +12,9 @@ def home():
 
 @app.post("/documents/upload")
 async def upload_document(file: UploadFile = File(...)):
-    file_path = UPLOAD_DIR / file.filename
-
-    with file_path.open("wb") as buffer:
+    file_path = UPLOAD_DIR / file.filename  #upload/hr.pdf
+    #with automatically handles closing the file
+    with file_path.open("wb") as buffer:    #wb=write binary
         buffer.write(await file.read())
 
     return {
