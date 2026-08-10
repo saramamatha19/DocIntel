@@ -50,14 +50,20 @@ def retrieve_documents(
         ids,
     ):
 
-        retrieved_chunks.append({
+        chunk = {
             "chunk_id": chunk_id,
             "text": document,
             "document_name": metadata["document_name"],
             "page_number": metadata["page_number"],
             "content_type": metadata["content_type"],
             "distance": distance,
-        })
+        }
+
+        # Preserve webpage URL if available
+        if "url" in metadata:
+            chunk["url"] = metadata["url"]
+
+        retrieved_chunks.append(chunk)
 
     return retrieved_chunks
 
@@ -104,6 +110,11 @@ if __name__ == "__main__":
         print(
             f"Content type: {result['content_type']}"
         )
+
+        if "url" in result:
+            print(
+                f"URL: {result['url']}"
+            )
 
         print(
             f"Distance: {result['distance']}"

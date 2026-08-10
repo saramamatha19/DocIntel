@@ -1,9 +1,14 @@
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File
+import requests
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
 
-from chroma_db import ingest_pdf
+from document_ingestion import extract_webpage
+from chunking import chunk_document
+from embedding import create_embeddings
+from chroma_db import ingest_document, store_chunks
+
 from retriever import retrieve_documents
 from call_llm import call_llm
 
@@ -31,12 +36,15 @@ UPLOAD_DIR.mkdir(
 
 
 # ============================================================
-# 3. Request model for questions
+# 3. Request models
 # ============================================================
 
 class QuestionRequest(BaseModel):
-
     question: str
+
+
+class URLRequest(BaseModel):
+    url: str
 
 
 # ============================================================
@@ -52,7 +60,7 @@ def home():
 
 
 # ============================================================
-# 5. Upload document
+# 5. Upload PDF file
 # ============================================================
 
 @app.post("/documents/upload")
@@ -60,21 +68,26 @@ async def upload_document(
     file: UploadFile = File(...)
 ):
 
-    # Create file path
+    # Check PDF
+    if not file.filename.lower().endswith(".pdf"):
 
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are supported."
+        )
+
+    # Create file path
     file_path = UPLOAD_DIR / file.filename
 
     # Save uploaded PDF
-
     with file_path.open("wb") as buffer:
 
         buffer.write(
             await file.read()
         )
 
-    # Ingest document into ChromaDB
-
-    stored_chunks = ingest_pdf(
+    # Ingest PDF into ChromaDB
+    stored_chunks = ingest_document(
         str(file_path)
     )
 
@@ -87,12 +100,183 @@ async def upload_document(
             "indexed successfully"
         ),
 
+        "document_type": "pdf",
+
         "chunks_stored": stored_chunks,
     }
 
 
 # ============================================================
-# 6. Ask question
+# 6. Upload document from URL
+# ============================================================
+
+@app.post("/documents/upload-url")
+def upload_document_from_url(
+    request: URLRequest
+):
+
+    url = request.url.strip()
+
+    # --------------------------------------------------------
+    # Download URL
+    # --------------------------------------------------------
+
+    try:
+
+        response = requests.get(
+            url,
+            timeout=30,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 "
+                    "(Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/151.0.0.0 Safari/537.36"
+                )
+            },
+        )
+
+        response.raise_for_status()
+
+    except requests.RequestException as exc:
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not download URL: {exc}"
+        )
+
+
+    # --------------------------------------------------------
+    # Detect content type
+    # --------------------------------------------------------
+
+    content_type = response.headers.get(
+        "content-type",
+        ""
+    ).lower()
+
+
+    # ========================================================
+    # CASE 1: PDF URL
+    # ========================================================
+
+    if (
+        "application/pdf" in content_type
+        or url.lower().split("?")[0].endswith(".pdf")
+    ):
+
+        filename = (
+            url.rstrip("/")
+            .split("/")[-1]
+            .split("?")[0]
+        )
+
+        if not filename.lower().endswith(".pdf"):
+
+            filename = "downloaded_document.pdf"
+
+        file_path = UPLOAD_DIR / filename
+
+        # Save PDF
+        with file_path.open("wb") as buffer:
+
+            buffer.write(
+                response.content
+            )
+
+        # Ingest PDF
+        stored_chunks = ingest_document(
+            str(file_path)
+        )
+
+        return {
+
+            "filename": filename,
+
+            "source_url": url,
+
+            "document_type": "pdf",
+
+            "message": (
+                "PDF downloaded and "
+                "indexed successfully"
+            ),
+
+            "chunks_stored": stored_chunks,
+        }
+
+
+    # ========================================================
+    # CASE 2: HTML webpage
+    # ========================================================
+
+    if "text/html" in content_type:
+
+        try:
+
+            # Extract webpage
+            content = extract_webpage(
+                url
+            )
+
+            # Chunk webpage
+            chunks = chunk_document(
+                content
+            )
+
+            # Create embeddings
+            embedded_chunks = create_embeddings(
+                chunks
+            )
+
+            # Store in ChromaDB
+            stored_chunks = store_chunks(
+                embedded_chunks
+            )
+
+        except Exception as exc:
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Could not process webpage: "
+                    f"{exc}"
+                )
+            )
+
+        return {
+
+            "filename": content[0]["document_name"],
+
+            "source_url": url,
+
+            "document_type": "webpage",
+
+            "message": (
+                "Webpage downloaded and "
+                "indexed successfully"
+            ),
+
+            "chunks_stored": stored_chunks,
+        }
+
+
+    # ========================================================
+    # CASE 3: Unsupported content
+    # ========================================================
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Unsupported URL content type: "
+            f"{content_type}"
+        )
+    )
+
+
+# ============================================================
+# 7. Ask question
 # ============================================================
 
 @app.post("/ask")
@@ -109,14 +293,16 @@ def ask_question(
         top_k=5,
     )
 
+
     # --------------------------------------------------------
-    # Step 2: Send retrieved chunks to LLM
+    # Step 2: Send chunks to LLM
     # --------------------------------------------------------
 
     answer = call_llm(
         request.question,
         retrieved_chunks,
     )
+
 
     # --------------------------------------------------------
     # Step 3: Prepare sources
@@ -145,8 +331,9 @@ def ask_question(
             ),
         })
 
+
     # --------------------------------------------------------
-    # Step 4: Return answer + citations
+    # Step 4: Return answer + sources
     # --------------------------------------------------------
 
     return {

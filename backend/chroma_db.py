@@ -5,11 +5,15 @@ from document_ingestion import extract_document
 from chunking import chunk_document
 from embedding import create_embeddings
 
+
 # 1. ChromaDB configuration
+
 CHROMA_PATH = "chroma_db"
 COLLECTION_NAME = "docintel_documents"
 
+
 # 2. Create persistent ChromaDB
+
 client = chromadb.PersistentClient(
     path=CHROMA_PATH
 )
@@ -18,13 +22,15 @@ collection = client.get_or_create_collection(
     name=COLLECTION_NAME
 )
 
-# 3. Process ONE PDF
-def process_pdf(pdf_file: str):
 
-    print(f"\nProcessing: {pdf_file}")
+# 3. Process ONE document
+
+def process_document(file_path: str):
+
+    print(f"\nProcessing: {file_path}")
 
     # Extract
-    content = extract_document(pdf_file)
+    content = extract_document(file_path)
 
     print(
         f"Extracted items: {len(content)}"
@@ -48,7 +54,9 @@ def process_pdf(pdf_file: str):
 
     return embedded_chunks
 
+
 # 4. Store chunks in ChromaDB
+
 def store_chunks(embedded_chunks):
 
     ids = []
@@ -76,6 +84,9 @@ def store_chunks(embedded_chunks):
             chunk["embedding"]
         )
 
+    if not ids:
+        return 0
+
     collection.upsert(
         ids=ids,
         documents=documents,
@@ -89,11 +100,13 @@ def store_chunks(embedded_chunks):
 
     return len(ids)
 
-# 5. Ingest ONE PDF
-def ingest_pdf(pdf_file: str):
 
-    embedded_chunks = process_pdf(
-        pdf_file
+# 5. Ingest ONE document
+
+def ingest_document(file_path: str):
+
+    embedded_chunks = process_document(
+        file_path
     )
 
     stored_count = store_chunks(
@@ -102,7 +115,9 @@ def ingest_pdf(pdf_file: str):
 
     return stored_count
 
+
 # 6. Process ALL PDFs
+
 def ingest_all_pdfs(folder: str):
 
     pdf_folder = Path(folder)
@@ -119,7 +134,7 @@ def ingest_all_pdfs(folder: str):
 
     for pdf_file in pdf_files:
 
-        stored_count = ingest_pdf(
+        stored_count = ingest_document(
             str(pdf_file)
         )
 
@@ -127,7 +142,9 @@ def ingest_all_pdfs(folder: str):
 
     return total_stored
 
+
 # 7. Run manually
+
 if __name__ == "__main__":
 
     total_stored = ingest_all_pdfs(

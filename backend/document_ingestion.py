@@ -3,6 +3,9 @@ from pathlib import Path
 import pymupdf
 import pytesseract
 from PIL import Image
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 
 def extract_document(pdf_file: str) -> list[dict]:
     """
@@ -125,10 +128,73 @@ def extract_document(pdf_file: str) -> list[dict]:
 
     return content
 
+#Extract text from a URL
+def extract_webpage(url: str) -> list[dict]:
+    """
+    Extract readable text from a webpage.
+
+    Returns the same normalized structure used by PDF extraction.
+    """
+
+    response = requests.get(
+        url,
+        timeout=15,
+        headers={
+            "User-Agent": "DocIntel/1.0"
+        },
+    )
+
+    response.raise_for_status()
+
+    soup = BeautifulSoup(
+        response.text,
+        "html.parser",
+    )
+
+    # Remove elements that usually don't contain
+    # useful document content.
+    for element in soup([
+        "script",
+        "style",
+        "nav",
+        "footer",
+        "header",
+    ]):
+        element.decompose()
+
+    text = soup.get_text(
+        separator="\n",
+        strip=True,
+    )
+
+    # Clean empty lines
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip()
+    ]
+
+    clean_text = "\n".join(lines)
+
+    parsed_url = urlparse(url)
+
+    document_name = (
+        parsed_url.netloc
+        + parsed_url.path
+    )
+
+    return [{
+        "text": clean_text,
+        "document_name": document_name,
+        "page_number": 1,
+        "content_type": "webpage",
+        "url": url,
+    }]
 
 
-# Test
-if __name__ == "__main__":
+
+# Test --pdf text
+'''if __name__ == "__main__":
 
     pdf_file = "uploads/atlassian/Security_Measures.pdf"
 
@@ -144,4 +210,32 @@ if __name__ == "__main__":
 
         print(f"Document: {item['document_name']}")
 
-        print(item["text"])
+        print(item["text"])'''
+
+if __name__ == "__main__":
+
+    url = "https://www.atlassian.com/software"
+
+    content = extract_webpage(url)
+
+    for index, item in enumerate(
+        content,
+        start=1,
+    ):
+
+        print(
+            f"\n--- Item {index} | "
+            f"{item['content_type'].upper()} ---"
+        )
+
+        print(
+            f"Document: {item['document_name']}"
+        )
+
+        print(
+            f"URL: {item['url']}"
+        )
+
+        print(
+            item["text"][:2000]
+        )

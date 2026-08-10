@@ -28,7 +28,11 @@ def chunk_document(content: list[dict]) -> list[dict]:
             continue
 
         content_type = item["content_type"]
+
+        # ---------------------------------
         # TABLE
+        # ---------------------------------
+
         if content_type == "table":
 
             chunk_id = (
@@ -37,17 +41,23 @@ def chunk_document(content: list[dict]) -> list[dict]:
                 f"_table{item['table_number']}"
             )
 
-            chunks.append({
+            chunk = {
                 "chunk_id": chunk_id,
                 "text": text,
                 "document_name": item["document_name"],
                 "page_number": item["page_number"],
                 "content_type": "table",
                 "table_number": item["table_number"],
-            })
+            }
+
+            chunks.append(chunk)
 
             continue
-        # TEXT / IMAGE OCR
+
+        # ---------------------------------
+        # TEXT / IMAGE OCR / WEBPAGE
+        # ---------------------------------
+
         split_texts = text_splitter.split_text(text)
 
         for chunk_index, chunk_text in enumerate(
@@ -55,7 +65,8 @@ def chunk_document(content: list[dict]) -> list[dict]:
             start=1,
         ):
 
-            # IMAGE OCR needs image_number in the ID
+            # IMAGE OCR needs image_number
+            # in the chunk ID
             if content_type == "image_ocr":
 
                 chunk_id = (
@@ -87,11 +98,19 @@ def chunk_document(content: list[dict]) -> list[dict]:
             if content_type == "image_ocr":
                 chunk["image_number"] = item["image_number"]
 
+            # Preserve webpage URL
+            if "url" in item:
+                chunk["url"] = item["url"]
+
             chunks.append(chunk)
 
     return chunks
 
+
+# ---------------------------------
 # TEST
+# ---------------------------------
+
 if __name__ == "__main__":
 
     pdf_file = (
@@ -106,7 +125,10 @@ if __name__ == "__main__":
     chunks = chunk_document(content)
 
     # 3. Display
-    for index, chunk in enumerate(chunks, start=1):
+    for index, chunk in enumerate(
+        chunks,
+        start=1,
+    ):
 
         print(
             f"\n--- Chunk {index} | "
@@ -130,6 +152,11 @@ if __name__ == "__main__":
         if "image_number" in chunk:
             print(
                 f"Image: {chunk['image_number']}"
+            )
+
+        if "url" in chunk:
+            print(
+                f"URL: {chunk['url']}"
             )
 
         print(chunk["text"])
