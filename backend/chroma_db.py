@@ -18,7 +18,7 @@ collection = client.get_or_create_collection(
     name=COLLECTION_NAME
 )
 
-# 3. Process one PDF
+# 3. Process ONE PDF
 def process_pdf(pdf_file: str):
 
     print(f"\nProcessing: {pdf_file}")
@@ -26,17 +26,25 @@ def process_pdf(pdf_file: str):
     # Extract
     content = extract_document(pdf_file)
 
-    print(f"Extracted items: {len(content)}")
+    print(
+        f"Extracted items: {len(content)}"
+    )
 
     # Chunk
     chunks = chunk_document(content)
 
-    print(f"Created chunks: {len(chunks)}")
+    print(
+        f"Created chunks: {len(chunks)}"
+    )
 
     # Embed
-    embedded_chunks = create_embeddings(chunks)
+    embedded_chunks = create_embeddings(
+        chunks
+    )
 
-    print(f"Created embeddings: {len(embedded_chunks)}")
+    print(
+        f"Created embeddings: {len(embedded_chunks)}"
+    )
 
     return embedded_chunks
 
@@ -50,9 +58,13 @@ def store_chunks(embedded_chunks):
 
     for chunk in embedded_chunks:
 
-        ids.append(chunk["chunk_id"])
+        ids.append(
+            chunk["chunk_id"]
+        )
 
-        documents.append(chunk["text"])
+        documents.append(
+            chunk["text"]
+        )
 
         metadatas.append({
             "document_name": chunk["document_name"],
@@ -60,7 +72,9 @@ def store_chunks(embedded_chunks):
             "content_type": chunk["content_type"],
         })
 
-        embeddings.append(chunk["embedding"])
+        embeddings.append(
+            chunk["embedding"]
+        )
 
     collection.upsert(
         ids=ids,
@@ -69,37 +83,68 @@ def store_chunks(embedded_chunks):
         embeddings=embeddings,
     )
 
-    print(f"Stored {len(ids)} chunks in ChromaDB")
+    print(
+        f"Stored {len(ids)} chunks in ChromaDB"
+    )
 
-# 5. Process all PDFs
+    return len(ids)
+
+# 5. Ingest ONE PDF
+def ingest_pdf(pdf_file: str):
+
+    embedded_chunks = process_pdf(
+        pdf_file
+    )
+
+    stored_count = store_chunks(
+        embedded_chunks
+    )
+
+    return stored_count
+
+# 6. Process ALL PDFs
 def ingest_all_pdfs(folder: str):
 
     pdf_folder = Path(folder)
 
-    pdf_files = list(pdf_folder.rglob("*.pdf"))
+    pdf_files = list(
+        pdf_folder.rglob("*.pdf")
+    )
 
-    print(f"\nFound {len(pdf_files)} PDF files")
+    print(
+        f"\nFound {len(pdf_files)} PDF files"
+    )
+
+    total_stored = 0
 
     for pdf_file in pdf_files:
 
-        embedded_chunks = process_pdf(
+        stored_count = ingest_pdf(
             str(pdf_file)
         )
 
-        store_chunks(
-            embedded_chunks
-        )
+        total_stored += stored_count
 
-# 6. Run
+    return total_stored
+
+# 7. Run manually
 if __name__ == "__main__":
 
-    ingest_all_pdfs(
+    total_stored = ingest_all_pdfs(
         "uploads/atlassian"
     )
 
-    print("\n-----------------------------")
-    print("ChromaDB ingestion complete")
-    print("-----------------------------")
+    print(
+        "\n-----------------------------"
+    )
+
+    print(
+        "ChromaDB ingestion complete"
+    )
+
+    print(
+        "-----------------------------"
+    )
 
     print(
         "Total stored chunks:",
