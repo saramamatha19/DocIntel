@@ -38,7 +38,7 @@ def create_embeddings(chunks: list[dict]) -> list[dict]:
 
 if __name__ == "__main__":
 
-    pdf_file = "uploads/GEP-Jun-2026-Regional-Highlights-MNA.pdf"
+    pdf_file = "uploads/atlassian/Security_Measures.pdf"
 
     # 1. Extract
     content = extract_document(pdf_file)

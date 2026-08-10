@@ -25,10 +25,9 @@ def chunk_document(content: list[dict]) -> list[dict]:
         text = item["text"].strip()
 
         if not text:
-            continue #if text is empty, skip to next item
+            continue
 
         content_type = item["content_type"]
-
         # TABLE
         if content_type == "table":
 
@@ -48,7 +47,6 @@ def chunk_document(content: list[dict]) -> list[dict]:
             })
 
             continue
-
         # TEXT / IMAGE OCR
         split_texts = text_splitter.split_text(text)
 
@@ -57,12 +55,24 @@ def chunk_document(content: list[dict]) -> list[dict]:
             start=1,
         ):
 
-            chunk_id = (
-                f"{item['document_name']}"
-                f"_page{item['page_number']}"
-                f"_{content_type}"
-                f"_{chunk_index}"
-            )
+            # IMAGE OCR needs image_number in the ID
+            if content_type == "image_ocr":
+
+                chunk_id = (
+                    f"{item['document_name']}"
+                    f"_page{item['page_number']}"
+                    f"_image{item['image_number']}"
+                    f"_ocr_{chunk_index}"
+                )
+
+            else:
+
+                chunk_id = (
+                    f"{item['document_name']}"
+                    f"_page{item['page_number']}"
+                    f"_{content_type}"
+                    f"_{chunk_index}"
+                )
 
             chunk = {
                 "chunk_id": chunk_id,
@@ -73,7 +83,7 @@ def chunk_document(content: list[dict]) -> list[dict]:
                 "chunk_index": chunk_index,
             }
 
-            # Preserve image identity for OCR content
+            # Preserve image identity
             if content_type == "image_ocr":
                 chunk["image_number"] = item["image_number"]
 
@@ -81,10 +91,13 @@ def chunk_document(content: list[dict]) -> list[dict]:
 
     return chunks
 
-
+# TEST
 if __name__ == "__main__":
 
-    pdf_file = "uploads/GEP-Jun-2026-Regional-Highlights-MNA.pdf"
+    pdf_file = (
+        "uploads/atlassian/"
+        "Cloud_Security_Shared_Responsibilities.pdf"
+    )
 
     # 1. Extract
     content = extract_document(pdf_file)
@@ -101,13 +114,22 @@ if __name__ == "__main__":
             f"Page {chunk['page_number']} ---"
         )
 
-        print(f"Document: {chunk['document_name']}")
-        print(f"Chunk ID: {chunk['chunk_id']}")
+        print(
+            f"Document: {chunk['document_name']}"
+        )
+
+        print(
+            f"Chunk ID: {chunk['chunk_id']}"
+        )
 
         if "table_number" in chunk:
-            print(f"Table: {chunk['table_number']}")
+            print(
+                f"Table: {chunk['table_number']}"
+            )
 
         if "image_number" in chunk:
-            print(f"Image: {chunk['image_number']}")
+            print(
+                f"Image: {chunk['image_number']}"
+            )
 
         print(chunk["text"])
