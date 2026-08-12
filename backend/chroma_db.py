@@ -1,9 +1,11 @@
 from pathlib import Path
-import chromadb
+
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
 
 from document_ingestion import extract_document
 from chunking import chunk_document
-from embedding import create_embeddings
+from embedding import embeddings
 
 
 # 1. ChromaDB configuration
@@ -12,14 +14,12 @@ CHROMA_PATH = "chroma_db"
 COLLECTION_NAME = "docintel_documents"
 
 
-# 2. Create persistent ChromaDB
+# 2. Create persistent Chroma vector store (via LangChain)
 
-client = chromadb.PersistentClient(
-    path=CHROMA_PATH
-)
-
-collection = client.get_or_create_collection(
-    name=COLLECTION_NAME
+vectorstore = Chroma(
+    collection_name=COLLECTION_NAME,
+    embedding_function=embeddings,
+    persist_directory=CHROMA_PATH,
 )
 
 
@@ -43,55 +43,43 @@ def process_document(file_path: str):
         f"Created chunks: {len(chunks)}"
     )
 
-    # Embed
-    embedded_chunks = create_embeddings(
-        chunks
-    )
-
-    print(
-        f"Created embeddings: {len(embedded_chunks)}"
-    )
-
-    return embedded_chunks
+    return chunks
 
 
-# 4. Store chunks in ChromaDB
+# 4. Store chunks in the vector store
+#    (embeddings are computed internally by the vectorstore)
 
-def store_chunks(embedded_chunks):
+def store_chunks(chunks):
+
+    if not chunks:
+        return 0
 
     ids = []
     documents = []
-    metadatas = []
-    embeddings = []
 
-    for chunk in embedded_chunks:
+    for chunk in chunks:
 
-        ids.append(
-            chunk["chunk_id"]
-        )
-
-        documents.append(
-            chunk["text"]
-        )
-
-        metadatas.append({
+        metadata = {
             "document_name": chunk["document_name"],
             "page_number": chunk["page_number"],
             "content_type": chunk["content_type"],
-        })
+        }
 
-        embeddings.append(
-            chunk["embedding"]
+        if "url" in chunk:
+            metadata["url"] = chunk["url"]
+
+        ids.append(chunk["chunk_id"])
+
+        documents.append(
+            Document(
+                page_content=chunk["text"],
+                metadata=metadata,
+            )
         )
 
-    if not ids:
-        return 0
-
-    collection.upsert(
-        ids=ids,
+    vectorstore.add_documents(
         documents=documents,
-        metadatas=metadatas,
-        embeddings=embeddings,
+        ids=ids,
     )
 
     print(
@@ -105,12 +93,12 @@ def store_chunks(embedded_chunks):
 
 def ingest_document(file_path: str):
 
-    embedded_chunks = process_document(
+    chunks = process_document(
         file_path
     )
 
     stored_count = store_chunks(
-        embedded_chunks
+        chunks
     )
 
     return stored_count
@@ -165,5 +153,5 @@ if __name__ == "__main__":
 
     print(
         "Total stored chunks:",
-        collection.count()
+        vectorstore._collection.count()
     )

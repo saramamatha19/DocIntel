@@ -1,4 +1,4 @@
-from sentence_transformers import SentenceTransformer
+from langchain_huggingface import HuggingFaceEmbeddings
 
 from document_ingestion import extract_document
 from chunking import chunk_document
@@ -7,8 +7,11 @@ from chunking import chunk_document
 MODEL_NAME = "all-MiniLM-L6-v2"
 
 
-# Load the embedding model once
-model = SentenceTransformer(MODEL_NAME)
+# Load the embedding model once, through LangChain's Embeddings interface
+embeddings = HuggingFaceEmbeddings(
+    model_name=MODEL_NAME,
+    encode_kwargs={"normalize_embeddings": True},
+)
 
 
 def create_embeddings(chunks: list[dict]) -> list[dict]:
@@ -19,10 +22,7 @@ def create_embeddings(chunks: list[dict]) -> list[dict]:
 
     texts = [chunk["text"] for chunk in chunks]
 
-    vectors = model.encode(
-        texts,
-        normalize_embeddings=True,
-    )
+    vectors = embeddings.embed_documents(texts)
 
     embedded_chunks = []
 
@@ -30,7 +30,7 @@ def create_embeddings(chunks: list[dict]) -> list[dict]:
 
         embedded_chunks.append({
             **chunk,
-            "embedding": vector.tolist(),
+            "embedding": vector,
         })
 
     return embedded_chunks

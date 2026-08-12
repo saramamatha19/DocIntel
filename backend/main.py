@@ -6,7 +6,6 @@ from pydantic import BaseModel
 
 from document_ingestion import extract_webpage
 from chunking import chunk_document
-from embedding import create_embeddings
 from chroma_db import ingest_document, store_chunks
 
 from retriever import retrieve_documents
@@ -225,14 +224,10 @@ def upload_document_from_url(
                 content
             )
 
-            # Create embeddings
-            embedded_chunks = create_embeddings(
-                chunks
-            )
-
             # Store in ChromaDB
+            # (embeddings are computed internally by the vectorstore)
             stored_chunks = store_chunks(
-                embedded_chunks
+                chunks
             )
 
         except Exception as exc:
@@ -312,7 +307,7 @@ def ask_question(
 
     for chunk in retrieved_chunks:
 
-        sources.append({
+        source = {
 
             "document_name": (
                 chunk["document_name"]
@@ -329,7 +324,12 @@ def ask_question(
             "chunk_id": (
                 chunk["chunk_id"]
             ),
-        })
+        }
+
+        if "url" in chunk:
+            source["url"] = chunk["url"]
+
+        sources.append(source)
 
 
     # --------------------------------------------------------

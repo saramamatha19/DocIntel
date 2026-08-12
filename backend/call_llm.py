@@ -1,41 +1,20 @@
-from openai import OpenAI
 from dotenv import load_dotenv
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+
 from retriever import retrieve_documents
 
 # 1. Load environment variables
 load_dotenv()
 
-# 2. Create OpenAI client
-client = OpenAI()
+# 2. Create the chat model (via LangChain)
+llm = ChatOpenAI(model="gpt-4o-mini")
 
-# 3. Call LLM with retrieved documents
-def call_llm(
-    question: str,
-    retrieved_chunks: list[dict],
-) -> str:
+# 3. Prompt template — same rules/format as before, expressed
+#    as a LangChain ChatPromptTemplate instead of a raw f-string
+PROMPT_TEMPLATE = ChatPromptTemplate.from_template(
     """
-    Generate an answer using only the retrieved
-    document chunks.
-    """
-
-    context_parts = []
-
-    for chunk in retrieved_chunks:
-
-        context_parts.append(
-            f"""
-Document: {chunk["document_name"]}
-Page: {chunk["page_number"]}
-Content type: {chunk["content_type"]}
-Chunk ID: {chunk["chunk_id"]}
-
-{chunk["text"]}
-"""
-        )
-
-    context = "\n---\n".join(context_parts)
-
-    prompt = f"""
 You are an AI assistant that answers questions from company documents.
 
 Answer the user's question using ONLY the provided document context.
@@ -55,12 +34,21 @@ SOURCE CITATION RULES:
 
 - Every factual section must have its own source.
 - A single answer may contain multiple sources.
-- For PDF content, cite:
-  **Source:** Document_Name.pdf, Page X.
-- For webpage content, cite:
-  **Source:** URL.
+- Check the "Content type" line of the chunk you are citing, and
+  follow the matching rule below:
+
+  - If Content type is "webpage":
+    You MUST cite the exact value that appears after "URL:" in that
+    chunk. Do NOT cite the "Document" field for webpage content,
+    even though a document name is also present.
+    **Source:** https://example.com/page
+
+  - If Content type is "text", "table", or "image_ocr" (i.e. any
+    PDF-derived content, there is no "URL:" line):
+    Cite the document name and page number.
+    **Source:** Document_Name.pdf, Page X.
+
 - Do not cite a URL just because the URL appears inside a PDF.
-- Use the document name and page number from the provided context.
 - Do not cite a document or page that does not support the statement.
 - Do not create or guess page numbers.
 
@@ -72,11 +60,11 @@ Answer based only on the retrieved context.
 
 **Source:** Document_Name.pdf, Page X.
 
-### Topic 2
+### Topic 2 (example when the source is a webpage)
 
 Answer based only on the retrieved context.
 
-**Source:** Document_Name.pdf, Page X.
+**Source:** https://example.com/page
 
 If multiple pages from the same document support a topic,
 you may cite them together:
@@ -90,20 +78,51 @@ User question:
 Document context:
 {context}
 """
+)
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-    )
+# 4. Compose the LCEL chain: prompt -> chat model -> plain string
+chain = PROMPT_TEMPLATE | llm | StrOutputParser()
 
-    return response.choices[0].message.content
 
-# 4. Run complete RAG pipeline
+# 5. Call LLM with retrieved documents
+def call_llm(
+    question: str,
+    retrieved_chunks: list[dict],
+) -> str:
+    """
+    Generate an answer using only the retrieved
+    document chunks.
+    """
+
+    context_parts = []
+
+    for chunk in retrieved_chunks:
+
+        url_line = (
+            f'URL: {chunk["url"]}\n'
+            if "url" in chunk
+            else ""
+        )
+
+        context_parts.append(
+            f"""
+Document: {chunk["document_name"]}
+Page: {chunk["page_number"]}
+Content type: {chunk["content_type"]}
+Chunk ID: {chunk["chunk_id"]}
+{url_line}
+{chunk["text"]}
+"""
+        )
+
+    context = "\n---\n".join(context_parts)
+
+    return chain.invoke({
+        "question": question,
+        "context": context,
+    })
+
+# 6. Run complete RAG pipeline
 if __name__ == "__main__":
 
     question = input("\nAsk a question: ")

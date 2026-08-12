@@ -1,62 +1,32 @@
-import chromadb
-
-from embedding import model
+from chroma_db import vectorstore
 
 
-# 1. Connect to existing ChromaDB
-
-CHROMA_PATH = "chroma_db"
-COLLECTION_NAME = "docintel_documents"
-
-client = chromadb.PersistentClient(
-    path=CHROMA_PATH
-)
-
-collection = client.get_collection(
-    name=COLLECTION_NAME
-)
-
-
-# 2. Retrieve relevant chunks
+# 1. Retrieve relevant chunks using LangChain's standard
+#    Retriever interface
 
 def retrieve_documents(
     query: str,
     top_k: int = 5,
 ) -> list[dict]:
 
-    # Convert the user's question into an embedding
-    query_embedding = model.encode(
-        query,
-        normalize_embeddings=True,
-    ).tolist()
-
-    # Search ChromaDB
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=top_k,
+    retriever = vectorstore.as_retriever(
+        search_kwargs={"k": top_k}
     )
+
+    documents = retriever.invoke(query)
 
     retrieved_chunks = []
 
-    documents = results["documents"][0]
-    metadatas = results["metadatas"][0]
-    distances = results["distances"][0]
-    ids = results["ids"][0]
+    for document in documents:
 
-    for document, metadata, distance, chunk_id in zip(
-        documents,
-        metadatas,
-        distances,
-        ids,
-    ):
+        metadata = document.metadata
 
         chunk = {
-            "chunk_id": chunk_id,
-            "text": document,
+            "chunk_id": document.id,
+            "text": document.page_content,
             "document_name": metadata["document_name"],
             "page_number": metadata["page_number"],
             "content_type": metadata["content_type"],
-            "distance": distance,
         }
 
         # Preserve webpage URL if available
@@ -115,10 +85,6 @@ if __name__ == "__main__":
             print(
                 f"URL: {result['url']}"
             )
-
-        print(
-            f"Distance: {result['distance']}"
-        )
 
         print(
             f"\n{result['text']}"

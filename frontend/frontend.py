@@ -239,6 +239,13 @@ if st.button("🔍 Ask"):
                         f"{source['content_type']}"
                     )
 
+                    if "url" in source:
+
+                        st.write(
+                            f"**URL:** "
+                            f"{source['url']}"
+                        )
+
                     st.write(
                         f"**Chunk ID:** "
                         f"{source['chunk_id']}"
