@@ -38,8 +38,14 @@ UPLOAD_DIR.mkdir(
 # 3. Request models
 # ============================================================
 
+class ChatTurn(BaseModel):
+    question: str
+    answer: str
+
+
 class QuestionRequest(BaseModel):
     question: str
+    chat_history: list[ChatTurn] = []
 
 
 class URLRequest(BaseModel):
@@ -296,6 +302,10 @@ def ask_question(
     answer = call_llm(
         request.question,
         retrieved_chunks,
+        chat_history=[
+            turn.model_dump()
+            for turn in request.chat_history
+        ],
     )
 
 

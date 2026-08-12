@@ -158,13 +158,76 @@ if st.sidebar.button("Download & Index"):
 
 st.header("💬 Ask your documents")
 
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+if "question_input_id" not in st.session_state:
+    st.session_state.question_input_id = 0
+
+
+# -----------------------------
+# Render previous turns (answers + sources)
+# -----------------------------
+
+for turn in st.session_state.chat_history:
+
+    st.subheader("💡 Answer")
+
+    st.write(
+        turn["answer"]
+    )
+
+    st.subheader("📑 Sources")
+
+    for index, source in enumerate(
+        turn["sources"],
+        start=1,
+    ):
+
+        with st.expander(
+            f"Source {index}: "
+            f"{source['document_name']} "
+            f"(Page {source['page_number']})"
+        ):
+
+            st.write(
+                f"**Document:** "
+                f"{source['document_name']}"
+            )
+
+            st.write(
+                f"**Page:** "
+                f"{source['page_number']}"
+            )
+
+            st.write(
+                f"**Content type:** "
+                f"{source['content_type']}"
+            )
+
+            if "url" in source:
+
+                st.write(
+                    f"**URL:** "
+                    f"{source['url']}"
+                )
+
+            st.write(
+                f"**Chunk ID:** "
+                f"{source['chunk_id']}"
+            )
+
+    st.divider()
+
+
 question = st.text_area(
-    "Ask a question about your documents",
+    "Ask a question or follow-up question about your documents",
     placeholder=(
         "Example: What are Atlassian's "
         "security responsibilities?"
     ),
     height=120,
+    key=f"question_input_{st.session_state.question_input_id}",
 )
 
 
@@ -185,7 +248,14 @@ if st.button("🔍 Ask"):
             response = requests.post(
                 f"{API_URL}/ask",
                 json={
-                    "question": question
+                    "question": question,
+                    "chat_history": [
+                        {
+                            "question": turn["question"],
+                            "answer": turn["answer"],
+                        }
+                        for turn in st.session_state.chat_history
+                    ],
                 },
                 timeout=120,
             )
@@ -195,62 +265,15 @@ if st.button("🔍 Ask"):
 
             data = response.json()
 
+            st.session_state.chat_history.append({
+                "question": question,
+                "answer": data["answer"],
+                "sources": data["sources"],
+            })
 
-            # -----------------------------
-            # Answer
-            # -----------------------------
+            st.session_state.question_input_id += 1
 
-            st.subheader("💡 Answer")
-
-            st.write(
-                data["answer"]
-            )
-
-
-            # -----------------------------
-            # Sources
-            # -----------------------------
-
-            st.subheader("📑 Sources")
-
-            for index, source in enumerate(
-                data["sources"],
-                start=1,
-            ):
-
-                with st.expander(
-                    f"Source {index}: "
-                    f"{source['document_name']} "
-                    f"(Page {source['page_number']})"
-                ):
-
-                    st.write(
-                        f"**Document:** "
-                        f"{source['document_name']}"
-                    )
-
-                    st.write(
-                        f"**Page:** "
-                        f"{source['page_number']}"
-                    )
-
-                    st.write(
-                        f"**Content type:** "
-                        f"{source['content_type']}"
-                    )
-
-                    if "url" in source:
-
-                        st.write(
-                            f"**URL:** "
-                            f"{source['url']}"
-                        )
-
-                    st.write(
-                        f"**Chunk ID:** "
-                        f"{source['chunk_id']}"
-                    )
-
+            st.rerun()
 
         else:
 

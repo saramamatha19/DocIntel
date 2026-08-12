@@ -52,6 +52,17 @@ SOURCE CITATION RULES:
 - Do not cite a document or page that does not support the statement.
 - Do not create or guess page numbers.
 
+CONVERSATION HISTORY:
+
+- Use the conversation history ONLY to understand what the user is
+  referring to (e.g. pronouns like "it", or follow-up phrases like
+  "what about page 3?").
+- Do NOT treat the conversation history as a source of facts. Facts
+  must come only from the document context below.
+
+Conversation so far (most recent last):
+{chat_history}
+
 FORMAT:
 
 ### Topic 1
@@ -84,14 +95,34 @@ Document context:
 chain = PROMPT_TEMPLATE | llm | StrOutputParser()
 
 
-# 5. Call LLM with retrieved documents
+# 5. Format prior turns for the prompt
+def format_chat_history(
+    chat_history: list[dict] | None,
+) -> str:
+
+    if not chat_history:
+        return "No previous conversation."
+
+    lines = []
+
+    for turn in chat_history:
+        lines.append(f"User: {turn['question']}")
+        lines.append(f"Assistant: {turn['answer']}")
+
+    return "\n".join(lines)
+
+
+# 6. Call LLM with retrieved documents
 def call_llm(
     question: str,
     retrieved_chunks: list[dict],
+    chat_history: list[dict] | None = None,
 ) -> str:
     """
     Generate an answer using only the retrieved
-    document chunks.
+    document chunks. `chat_history` (previous
+    question/answer turns) is used only to resolve
+    follow-up references, not as a source of facts.
     """
 
     context_parts = []
@@ -120,9 +151,10 @@ Chunk ID: {chunk["chunk_id"]}
     return chain.invoke({
         "question": question,
         "context": context,
+        "chat_history": format_chat_history(chat_history),
     })
 
-# 6. Run complete RAG pipeline
+# 7. Run complete RAG pipeline
 if __name__ == "__main__":
 
     question = input("\nAsk a question: ")
