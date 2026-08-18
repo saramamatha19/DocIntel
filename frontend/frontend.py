@@ -114,14 +114,14 @@ st.markdown(
 # visibly flagged rather than looking the same as a strong one.
 # ============================================================
 
-def render_confidence(confidence):
+def render_confidence(confidence, label="Retrieval Confidence"):
 
     band = confidence["band"]
     percent = confidence["percent"]
 
     st.markdown(
         f'<div class="confidence-row">'
-        f'<span class="confidence-label">Retrieval Confidence</span>'
+        f'<span class="confidence-label">{label}</span>'
         f'<div class="confidence-track">'
         f'<div class="confidence-fill {band}" '
         f'style="width:{percent}%"></div>'
@@ -429,12 +429,13 @@ if st.sidebar.button("Download & Index"):
 
 
 # ============================================================
-# Main area - Chat / Documents tabs
+# Main area - Chat / Documents / Compare tabs
 # ============================================================
 
-tab_chat, tab_documents = st.tabs([
+tab_chat, tab_documents, tab_compare = st.tabs([
     "💬 Chat",
     "📁 Documents",
+    "🔍 Compare",
 ])
 
 
@@ -740,3 +741,361 @@ with tab_documents:
         st.error(
             f"Could not load documents: {documents_response.text}"
         )
+
+
+# ------------------------------------------------------------
+# Compare tab
+# ------------------------------------------------------------
+
+with tab_compare:
+
+    st.header("🔍 Compare")
+
+    compare_mode = st.radio(
+        "What do you want to compare?",
+        ["Companies", "Documents"],
+        horizontal=True,
+    )
+
+    companies_response = requests.get(
+        f"{API_URL}/documents",
+        timeout=30,
+    )
+
+    if not companies_response.ok:
+
+        st.error(
+            f"Could not load documents: {companies_response.text}"
+        )
+
+    elif compare_mode == "Companies":
+
+        all_docs = companies_response.json()["documents"]
+
+        company_options = sorted(set(
+            doc.get("company", "Unknown") for doc in all_docs
+        ))
+
+        if len(company_options) < 2:
+
+            st.info(
+                "You need documents from at least 2 different "
+                "companies to compare. Upload some from the "
+                "sidebar first."
+            )
+
+        else:
+
+            col_a, col_b = st.columns(2)
+
+            with col_a:
+
+                company_a = st.selectbox(
+                    "Company A",
+                    company_options,
+                    index=0,
+                )
+
+            with col_b:
+
+                company_b = st.selectbox(
+                    "Company B",
+                    company_options,
+                    index=1,
+                )
+
+            compare_question = st.text_input(
+                "What do you want to compare?"
+            )
+
+            if st.button("Compare"):
+
+                if company_a == company_b:
+
+                    st.warning(
+                        "Please choose two different companies."
+                    )
+
+                elif not compare_question.strip():
+
+                    st.warning(
+                        "Please enter a question to compare."
+                    )
+
+                else:
+
+                    compare_result = None
+
+                    with st.status(
+                        "Comparing...",
+                        expanded=True,
+                    ) as compare_status:
+
+                        compare_response = requests.post(
+                            f"{API_URL}/compare",
+                            json={
+                                "question": compare_question,
+                                "company_a": company_a,
+                                "company_b": company_b,
+                            },
+                            timeout=120,
+                            stream=True,
+                        )
+
+                        if compare_response.ok:
+
+                            for line in (
+                                compare_response.iter_lines()
+                            ):
+
+                                if not line:
+                                    continue
+
+                                event = json.loads(line)
+
+                                if event["type"] == "status":
+
+                                    st.write(event["message"])
+
+                                elif event["type"] == "result":
+
+                                    compare_result = event["data"]
+
+                            compare_status.update(
+                                label="Done",
+                                state="complete",
+                                expanded=False,
+                            )
+
+                        else:
+
+                            compare_status.update(
+                                label="Request failed",
+                                state="error",
+                                expanded=True,
+                            )
+
+                    if compare_result:
+
+                        st.markdown(
+                            render_answer_with_citations(
+                                compare_result["answer"],
+                                compare_result["sources"],
+                            ),
+                            unsafe_allow_html=True,
+                        )
+
+                        meter_col_a, meter_col_b = st.columns(2)
+
+                        with meter_col_a:
+
+                            render_confidence(
+                                compare_result["confidence_a"],
+                                label=f"{company_a} confidence",
+                            )
+
+                        with meter_col_b:
+
+                            render_confidence(
+                                compare_result["confidence_b"],
+                                label=f"{company_b} confidence",
+                            )
+
+                        if compare_result["sources"]:
+
+                            st.subheader("📑 Sources")
+
+                            for index, source in enumerate(
+                                compare_result["sources"],
+                                start=1,
+                            ):
+
+                                with st.expander(
+                                    f"Source {index} "
+                                    f"({source['company']}): "
+                                    f"{source['document_name']} "
+                                    f"(Page {source['page_number']})"
+                                ):
+
+                                    quoted_text = (
+                                        source["text"].replace(
+                                            "\n", "\n> "
+                                        )
+                                    )
+
+                                    st.markdown(
+                                        f"> {quoted_text}"
+                                    )
+
+                    elif not compare_response.ok:
+
+                        st.error(
+                            "Request failed: "
+                            f"{compare_response.text}"
+                        )
+
+    else:
+
+        all_docs = companies_response.json()["documents"]
+
+        document_options = sorted(
+            doc["document_name"] for doc in all_docs
+        )
+
+        if len(document_options) < 2:
+
+            st.info(
+                "You need at least 2 indexed documents to "
+                "compare. Upload some from the sidebar first."
+            )
+
+        else:
+
+            doc_col_a, doc_col_b = st.columns(2)
+
+            with doc_col_a:
+
+                document_a = st.selectbox(
+                    "Document A",
+                    document_options,
+                    index=0,
+                )
+
+            with doc_col_b:
+
+                document_b = st.selectbox(
+                    "Document B",
+                    document_options,
+                    index=1,
+                )
+
+            focus_input = st.text_input(
+                "Focus on (optional)",
+                placeholder=(
+                    "Leave blank for a full comparison, or "
+                    "narrow it — e.g. \"pricing terms\""
+                ),
+            )
+
+            if st.button("Compare documents"):
+
+                if document_a == document_b:
+
+                    st.warning(
+                        "Please choose two different documents."
+                    )
+
+                else:
+
+                    compare_docs_result = None
+
+                    with st.status(
+                        "Comparing...",
+                        expanded=True,
+                    ) as compare_docs_status:
+
+                        compare_docs_response = requests.post(
+                            f"{API_URL}/compare-documents",
+                            json={
+                                "document_a": document_a,
+                                "document_b": document_b,
+                                "focus": focus_input.strip(),
+                            },
+                            timeout=120,
+                            stream=True,
+                        )
+
+                        if compare_docs_response.ok:
+
+                            for line in (
+                                compare_docs_response.iter_lines()
+                            ):
+
+                                if not line:
+                                    continue
+
+                                event = json.loads(line)
+
+                                if event["type"] == "status":
+
+                                    st.write(event["message"])
+
+                                elif event["type"] == "result":
+
+                                    compare_docs_result = (
+                                        event["data"]
+                                    )
+
+                            compare_docs_status.update(
+                                label="Done",
+                                state="complete",
+                                expanded=False,
+                            )
+
+                        else:
+
+                            compare_docs_status.update(
+                                label="Request failed",
+                                state="error",
+                                expanded=True,
+                            )
+
+                    if compare_docs_result:
+
+                        st.markdown(
+                            render_answer_with_citations(
+                                compare_docs_result["answer"],
+                                compare_docs_result["sources"],
+                            ),
+                            unsafe_allow_html=True,
+                        )
+
+                        if compare_docs_result["truncated_a"]:
+
+                            st.caption(
+                                f"⚠️ {document_a} has "
+                                f"{compare_docs_result['total_chunks_a']} "
+                                "chunks — only part of it was "
+                                "used for this comparison."
+                            )
+
+                        if compare_docs_result["truncated_b"]:
+
+                            st.caption(
+                                f"⚠️ {document_b} has "
+                                f"{compare_docs_result['total_chunks_b']} "
+                                "chunks — only part of it was "
+                                "used for this comparison."
+                            )
+
+                        if compare_docs_result["sources"]:
+
+                            st.subheader("📑 Sources")
+
+                            for index, source in enumerate(
+                                compare_docs_result["sources"],
+                                start=1,
+                            ):
+
+                                with st.expander(
+                                    f"Source {index}: "
+                                    f"{source['document_name']} "
+                                    f"(Page {source['page_number']})"
+                                ):
+
+                                    quoted_text = (
+                                        source["text"].replace(
+                                            "\n", "\n> "
+                                        )
+                                    )
+
+                                    st.markdown(
+                                        f"> {quoted_text}"
+                                    )
+
+                    elif not compare_docs_response.ok:
+
+                        st.error(
+                            "Request failed: "
+                            f"{compare_docs_response.text}"
+                        )

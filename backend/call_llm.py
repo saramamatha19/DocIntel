@@ -270,6 +270,224 @@ Chunk ID: {chunk["chunk_id"]}
         "chat_history": format_chat_history(chat_history),
     })
 
+# 6b. Compare two companies — a separate prompt from the
+#     single-corpus one above, since the rules are genuinely
+#     different (address both sides explicitly, and admit it
+#     plainly when one side has no relevant coverage instead of
+#     blending or guessing).
+
+COMPARE_PROMPT_TEMPLATE = ChatPromptTemplate.from_template(
+    """
+You are an AI assistant that compares company documents.
+
+Answer the user's question by comparing {company_a} and
+{company_b}, using ONLY the numbered sources below. Each
+source is labeled with which company it belongs to.
+
+Rules:
+
+- Do not use outside knowledge — base every claim only on the
+  numbered sources below.
+- Address {company_a} and {company_b} explicitly and
+  separately — do not blend them into one unsupported claim.
+- If one company's sources don't actually cover this topic,
+  say so plainly for that company (e.g. "I could not find
+  relevant information for {company_b} on this topic.")
+  rather than guessing or reusing the other company's answer
+  for it.
+- Cite every claim with its source number in square brackets,
+  e.g. [1], immediately after the specific clause it supports.
+
+FORMAT EXAMPLE:
+
+### {company_a}
+
+Answer based only on {company_a}'s sources [1][2].
+
+### {company_b}
+
+Answer based only on {company_b}'s sources [4].
+
+### Key differences
+
+A short summary of what's actually different between the two,
+based only on what the sources above established.
+
+
+User question:
+{question}
+
+Numbered sources:
+{context}
+"""
+)
+
+compare_chain = (
+    COMPARE_PROMPT_TEMPLATE | llm | StrOutputParser()
+)
+
+
+def compare_answer(
+    question: str,
+    chunks_a: list[dict],
+    company_a: str,
+    chunks_b: list[dict],
+    company_b: str,
+) -> str:
+    """
+    Generate a comparison answer from chunks retrieved
+    separately for each company. Sources are numbered
+    continuously across both sides — chunks_a first
+    (1..len(chunks_a)), then chunks_b — matching the combined,
+    continuously-numbered `sources` list main.py builds, so a
+    [N] marker in the answer maps straight to that list.
+    """
+
+    labeled_chunks = (
+        [(chunk, company_a) for chunk in chunks_a]
+        + [(chunk, company_b) for chunk in chunks_b]
+    )
+
+    context_parts = []
+
+    for index, (chunk, company) in enumerate(
+        labeled_chunks, start=1
+    ):
+
+        url_line = (
+            f'URL: {chunk["url"]}\n'
+            if "url" in chunk
+            else ""
+        )
+
+        context_parts.append(
+            f"""
+Source {index} ({company}):
+Document: {chunk["document_name"]}
+Page: {chunk["page_number"]}
+Content type: {chunk["content_type"]}
+{url_line}
+{chunk["text"]}
+"""
+        )
+
+    context = "\n---\n".join(context_parts)
+
+    return compare_chain.invoke({
+        "question": question,
+        "context": context,
+        "company_a": company_a,
+        "company_b": company_b,
+    })
+
+
+# 6c. Compare two specific documents — "what changed" rather
+#     than a topic search, so this takes whole documents (all
+#     their chunks, or all up to a cap) rather than retrieved
+#     top-k chunks, since there's no natural search query for
+#     "what's different between these two."
+
+COMPARE_DOCUMENTS_PROMPT_TEMPLATE = ChatPromptTemplate.from_template(
+    """
+You are an AI assistant that compares two document versions
+and identifies what changed between them.
+
+Document A is "{document_a}". Document B is "{document_b}".
+Each numbered source below is labeled with which document it
+came from.
+
+{focus_line}
+
+Rules:
+
+- Do not use outside knowledge — base every claim only on the
+  numbered sources below.
+- Identify concrete differences: things added, removed, or
+  changed between the two documents. Don't just describe each
+  document separately — actually compare them.
+- If something exists in one document but not the other, say
+  so explicitly, rather than only describing what's similar.
+- Cite every claim with its source number in square brackets,
+  e.g. [1], immediately after the specific clause it supports.
+
+FORMAT EXAMPLE:
+
+### Added in {document_b}
+
+Something that appears in {document_b} but not {document_a} [4].
+
+### Removed from {document_a}
+
+Something that appeared in {document_a} but is absent from
+{document_b} [2].
+
+### Changed
+
+Something that exists in both but differs [1][5].
+
+
+Numbered sources:
+{context}
+"""
+)
+
+compare_documents_chain = (
+    COMPARE_DOCUMENTS_PROMPT_TEMPLATE | llm | StrOutputParser()
+)
+
+
+def compare_document_versions(
+    document_a: str,
+    chunks_a: list[dict],
+    document_b: str,
+    chunks_b: list[dict],
+    focus: str | None = None,
+) -> str:
+    """
+    Generate a "what changed" comparison between two specific
+    documents, given all (or all-up-to-the-cap) of their
+    chunks. Sources are numbered continuously across both —
+    chunks_a first, then chunks_b — same convention as
+    compare_answer().
+    """
+
+    labeled_chunks = (
+        [(chunk, document_a) for chunk in chunks_a]
+        + [(chunk, document_b) for chunk in chunks_b]
+    )
+
+    context_parts = []
+
+    for index, (chunk, document_name) in enumerate(
+        labeled_chunks, start=1
+    ):
+
+        context_parts.append(
+            f"""
+Source {index} ({document_name}):
+Page: {chunk["page_number"]}
+Content type: {chunk["content_type"]}
+
+{chunk["text"]}
+"""
+        )
+
+    context = "\n---\n".join(context_parts)
+
+    focus_line = (
+        f"Focus specifically on: {focus}."
+        if focus
+        else ""
+    )
+
+    return compare_documents_chain.invoke({
+        "document_a": document_a,
+        "document_b": document_b,
+        "focus_line": focus_line,
+        "context": context,
+    })
+
+
 # 7. Run complete RAG pipeline
 if __name__ == "__main__":
 

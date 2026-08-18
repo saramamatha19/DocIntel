@@ -18,10 +18,16 @@ from chroma_db import (
     delete_document,
     find_duplicate,
     classify_and_summarize,
+    get_document_chunks,
 )
 
 from retriever import retrieve_documents, compute_confidence
-from call_llm import call_llm, NO_ANSWER_MESSAGE
+from call_llm import (
+    call_llm,
+    compare_answer,
+    compare_document_versions,
+    NO_ANSWER_MESSAGE,
+)
 
 
 # ============================================================
@@ -103,6 +109,18 @@ class URLRequest(BaseModel):
 
 class DocumentDeleteRequest(BaseModel):
     document_name: str
+
+
+class CompareRequest(BaseModel):
+    question: str
+    company_a: str
+    company_b: str
+
+
+class CompareDocumentsRequest(BaseModel):
+    document_a: str
+    document_b: str
+    focus: str = ""
 
 
 # ============================================================
@@ -784,5 +802,351 @@ def ask_question(
 
     return StreamingResponse(
         run_ask_pipeline(request),
+        media_type="application/x-ndjson",
+    )
+
+
+# ============================================================
+# 10. Compare two companies
+# ============================================================
+
+def run_compare_pipeline(request: CompareRequest):
+    """
+    Same streaming shape as run_ask_pipeline, but retrieves each
+    company separately (so one company's documents can't crowd
+    out the other's) and reports confidence per side rather than
+    blended into one number.
+    """
+
+    start_time = time.time()
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": f"Retrieving {request.company_a}'s documents...",
+    })
+
+    chunks_a = retrieve_documents(
+        request.question,
+        top_k=5,
+        company=request.company_a,
+    )
+
+    confidence_a = compute_confidence(chunks_a)
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": f"Retrieving {request.company_b}'s documents...",
+    })
+
+    chunks_b = retrieve_documents(
+        request.question,
+        top_k=5,
+        company=request.company_b,
+    )
+
+    confidence_b = compute_confidence(chunks_b)
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": (
+            f"{request.company_a}: {confidence_a['percent']}% "
+            f"confidence ({len(chunks_a)} chunks) — "
+            f"{request.company_b}: {confidence_b['percent']}% "
+            f"confidence ({len(chunks_b)} chunks)"
+        ),
+    })
+
+    # Guardrail: only skip the LLM if NEITHER side has anything
+    # worth comparing. One side being critical while the other
+    # is fine is a real, useful case (verified during testing) —
+    # not something to guard against.
+    if (
+        confidence_a["band"] == "critical"
+        and confidence_b["band"] == "critical"
+    ):
+
+        elapsed = time.time() - start_time
+
+        logger.info(
+            f"Compare (guardrail skipped LLM): "
+            f"{request.question!r} | both sides critical | "
+            f"{elapsed:.2f}s"
+        )
+
+        yield stream_ndjson({
+            "type": "status",
+            "message": (
+                "Neither company has relevant content — "
+                f"skipping comparison ({elapsed:.2f}s)"
+            ),
+        })
+
+        yield stream_ndjson({
+            "type": "result",
+            "data": {
+                "question": request.question,
+                "company_a": request.company_a,
+                "company_b": request.company_b,
+                "answer": NO_ANSWER_MESSAGE,
+                "sources": [],
+                "confidence_a": confidence_a,
+                "confidence_b": confidence_b,
+            },
+        })
+
+        return
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": "Generating comparison...",
+    })
+
+    answer = compare_answer(
+        request.question,
+        chunks_a,
+        request.company_a,
+        chunks_b,
+        request.company_b,
+    )
+
+    # Combined, continuously-numbered source list — matches the
+    # numbering compare_answer() used when building its prompt.
+    sources = []
+
+    for chunk, company in (
+        [(c, request.company_a) for c in chunks_a]
+        + [(c, request.company_b) for c in chunks_b]
+    ):
+
+        source = {
+            "document_name": chunk["document_name"],
+            "page_number": chunk["page_number"],
+            "content_type": chunk["content_type"],
+            "chunk_id": chunk["chunk_id"],
+            "text": chunk["text"],
+            "company": company,
+        }
+
+        if "url" in chunk:
+            source["url"] = chunk["url"]
+
+        sources.append(source)
+
+    elapsed = time.time() - start_time
+
+    logger.info(
+        f"Compare (LLM called): {request.question!r} | "
+        f"{request.company_a}={confidence_a['percent']}% | "
+        f"{request.company_b}={confidence_b['percent']}% | "
+        f"{elapsed:.2f}s"
+    )
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": (
+            f"Comparison generated ({len(sources)} sources) "
+            f"in {elapsed:.2f}s"
+        ),
+    })
+
+    yield stream_ndjson({
+        "type": "result",
+        "data": {
+            "question": request.question,
+            "company_a": request.company_a,
+            "company_b": request.company_b,
+            "answer": answer,
+            "sources": sources,
+            "confidence_a": confidence_a,
+            "confidence_b": confidence_b,
+        },
+    })
+
+
+@app.post("/compare")
+def compare_documents(
+    request: CompareRequest
+):
+
+    return StreamingResponse(
+        run_compare_pipeline(request),
+        media_type="application/x-ndjson",
+    )
+
+
+# ============================================================
+# 11. Compare two specific documents ("what changed")
+# ============================================================
+
+def run_compare_documents_pipeline(
+    request: CompareDocumentsRequest
+):
+    """
+    Unlike run_compare_pipeline (topic search, per side), this
+    fetches whole documents directly by name — there's no
+    natural search query for "what's different between these
+    two." No confidence meter here either: confidence was a
+    retrieval-relevance concept, and this isn't a relevance
+    search, so one would be meaningless. The trust signal
+    instead is an honest truncation notice when a document is
+    too large to send in full.
+    """
+
+    start_time = time.time()
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": (
+            f"Fetching all chunks for {request.document_a}..."
+        ),
+    })
+
+    result_a = get_document_chunks(request.document_a)
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": (
+            f"Fetching all chunks for {request.document_b}..."
+        ),
+    })
+
+    result_b = get_document_chunks(request.document_b)
+
+    if result_a["total_chunks"] == 0 or result_b["total_chunks"] == 0:
+
+        missing = (
+            request.document_a
+            if result_a["total_chunks"] == 0
+            else request.document_b
+        )
+
+        elapsed = time.time() - start_time
+
+        logger.warning(
+            f"Compare-documents skipped: '{missing}' has no "
+            f"indexed content | {elapsed:.2f}s"
+        )
+
+        yield stream_ndjson({
+            "type": "status",
+            "message": f"'{missing}' has no indexed content.",
+        })
+
+        yield stream_ndjson({
+            "type": "result",
+            "data": {
+                "document_a": request.document_a,
+                "document_b": request.document_b,
+                "answer": (
+                    f"'{missing}' has no indexed content to "
+                    "compare."
+                ),
+                "sources": [],
+                "truncated_a": False,
+                "truncated_b": False,
+                "total_chunks_a": result_a["total_chunks"],
+                "total_chunks_b": result_b["total_chunks"],
+            },
+        })
+
+        return
+
+    truncation_notes = []
+
+    if result_a["truncated"]:
+
+        truncation_notes.append(
+            f"{request.document_a}: using first "
+            f"{len(result_a['chunks'])} of "
+            f"{result_a['total_chunks']} chunks"
+        )
+
+    if result_b["truncated"]:
+
+        truncation_notes.append(
+            f"{request.document_b}: using first "
+            f"{len(result_b['chunks'])} of "
+            f"{result_b['total_chunks']} chunks"
+        )
+
+    if truncation_notes:
+
+        yield stream_ndjson({
+            "type": "status",
+            "message": "Note: " + "; ".join(truncation_notes),
+        })
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": "Generating comparison...",
+    })
+
+    focus = request.focus.strip() or None
+
+    answer = compare_document_versions(
+        request.document_a,
+        result_a["chunks"],
+        request.document_b,
+        result_b["chunks"],
+        focus=focus,
+    )
+
+    sources = []
+
+    for chunk in (
+        result_a["chunks"] + result_b["chunks"]
+    ):
+
+        source = {
+            "document_name": chunk["document_name"],
+            "page_number": chunk["page_number"],
+            "content_type": chunk["content_type"],
+            "chunk_id": chunk["chunk_id"],
+            "text": chunk["text"],
+        }
+
+        if "url" in chunk:
+            source["url"] = chunk["url"]
+
+        sources.append(source)
+
+    elapsed = time.time() - start_time
+
+    logger.info(
+        f"Compare-documents (LLM called): "
+        f"{request.document_a!r} vs {request.document_b!r} | "
+        f"{elapsed:.2f}s"
+    )
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": (
+            f"Comparison generated ({len(sources)} sources) "
+            f"in {elapsed:.2f}s"
+        ),
+    })
+
+    yield stream_ndjson({
+        "type": "result",
+        "data": {
+            "document_a": request.document_a,
+            "document_b": request.document_b,
+            "answer": answer,
+            "sources": sources,
+            "truncated_a": result_a["truncated"],
+            "truncated_b": result_b["truncated"],
+            "total_chunks_a": result_a["total_chunks"],
+            "total_chunks_b": result_b["total_chunks"],
+        },
+    })
+
+
+@app.post("/compare-documents")
+def compare_specific_documents(
+    request: CompareDocumentsRequest
+):
+
+    return StreamingResponse(
+        run_compare_documents_pipeline(request),
         media_type="application/x-ndjson",
     )

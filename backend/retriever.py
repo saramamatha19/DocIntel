@@ -9,12 +9,45 @@ from chroma_db import vectorstore
 def retrieve_documents(
     query: str,
     top_k: int = 5,
+    company: str | None = None,
 ) -> list[dict]:
+    """
+    company, when given, restricts the search to only that
+    company's chunks (used by the Compare feature, which needs
+    to search each side separately rather than one pooled top-k
+    — otherwise one company's documents could crowd out the
+    other's entirely).
 
-    results = vectorstore.similarity_search_with_score(
-        query,
-        k=top_k,
-    )
+    This does NOT use Chroma's native `where` filter combined
+    with vector search — that combination throws an internal
+    error in this chromadb version regardless of which field is
+    filtered on (verified directly, not specific to "company").
+    Instead, this searches the whole collection unfiltered and
+    filters/truncates to top_k in Python, which is only a little
+    more work at this corpus size (low hundreds of chunks).
+    """
+
+    if company:
+
+        total_chunks = vectorstore._collection.count()
+
+        all_results = vectorstore.similarity_search_with_score(
+            query,
+            k=total_chunks,
+        )
+
+        results = [
+            (document, distance)
+            for document, distance in all_results
+            if document.metadata.get("company") == company
+        ][:top_k]
+
+    else:
+
+        results = vectorstore.similarity_search_with_score(
+            query,
+            k=top_k,
+        )
 
     retrieved_chunks = []
 

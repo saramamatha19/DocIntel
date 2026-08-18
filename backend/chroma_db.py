@@ -304,6 +304,65 @@ def delete_document(document_name: str) -> int:
     return deleted_count
 
 
+# 8b. Fetch every chunk belonging to ONE specific document — a
+#     direct lookup, not a similarity search, since "compare
+#     these two documents" has no natural search query. Capped
+#     for very large documents, with an explicit "truncated"
+#     flag rather than silently dropping content.
+
+MAX_CHUNKS_PER_DOCUMENT_FOR_COMPARISON = 60
+
+
+def get_document_chunks(document_name: str) -> dict:
+
+    result = vectorstore.get(
+        where={"document_name": document_name},
+        include=["metadatas", "documents"],
+    )
+
+    chunks = []
+
+    for chunk_id, metadata, text in zip(
+        result["ids"],
+        result["metadatas"],
+        result["documents"],
+    ):
+
+        chunk = {
+            "chunk_id": chunk_id,
+            "text": text,
+            "document_name": metadata["document_name"],
+            "page_number": metadata["page_number"],
+            "content_type": metadata["content_type"],
+        }
+
+        if "url" in metadata:
+            chunk["url"] = metadata["url"]
+
+        chunks.append(chunk)
+
+    # Reading order: by page, then by chunk_id as a tiebreaker
+    # within a page.
+    chunks.sort(
+        key=lambda c: (c["page_number"], c["chunk_id"])
+    )
+
+    total_chunks = len(chunks)
+
+    truncated = (
+        total_chunks > MAX_CHUNKS_PER_DOCUMENT_FOR_COMPARISON
+    )
+
+    if truncated:
+        chunks = chunks[:MAX_CHUNKS_PER_DOCUMENT_FOR_COMPARISON]
+
+    return {
+        "chunks": chunks,
+        "total_chunks": total_chunks,
+        "truncated": truncated,
+    }
+
+
 # 9. Run manually
 
 if __name__ == "__main__":
