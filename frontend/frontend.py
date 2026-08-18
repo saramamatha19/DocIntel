@@ -1,4 +1,5 @@
 import html
+import json
 import re
 
 import streamlit as st
@@ -236,8 +237,8 @@ if "recent_uploads" not in st.session_state:
 st.sidebar.header("📄 Add Documents")
 
 uploaded_files = st.sidebar.file_uploader(
-    "Upload PDFs",
-    type=["pdf"],
+    "Upload documents",
+    type=["pdf", "txt", "docx", "md"],
     accept_multiple_files=True,
 )
 
@@ -265,7 +266,7 @@ if st.sidebar.button("Upload & Index"):
                     "file": (
                         uploaded_file.name,
                         uploaded_file.getvalue(),
-                        "application/pdf",
+                        uploaded_file.type,
                     )
                 }
 
@@ -446,6 +447,14 @@ with tab_chat:
 
         with st.chat_message("assistant"):
 
+            if turn.get("steps"):
+
+                with st.expander("🔍 What I did"):
+
+                    for step in turn["steps"]:
+
+                        st.write(step)
+
             st.markdown(
                 render_answer_with_citations(
                     turn["answer"],
@@ -524,9 +533,13 @@ with tab_chat:
 
         with st.chat_message("assistant"):
 
-            with st.spinner(
-                "Searching documents and generating answer..."
-            ):
+            final_result = None
+            steps = []
+
+            with st.status(
+                "Thinking...",
+                expanded=True,
+            ) as status:
 
                 response = requests.post(
                     f"{API_URL}/ask",
@@ -541,23 +554,60 @@ with tab_chat:
                         ],
                     },
                     timeout=120,
+                    stream=True,
                 )
 
+                if response.ok:
 
-            if response.ok:
+                    # Each line arrives as its real pipeline
+                    # stage actually completes on the backend —
+                    # this loop renders them live as they come
+                    # in, not after the whole request finishes.
+                    for line in response.iter_lines():
 
-                data = response.json()
+                        if not line:
+                            continue
+
+                        event = json.loads(line)
+
+                        if event["type"] == "status":
+
+                            st.write(event["message"])
+
+                            steps.append(event["message"])
+
+                        elif event["type"] == "result":
+
+                            final_result = event["data"]
+
+                    status.update(
+                        label="Done",
+                        state="complete",
+                        expanded=False,
+                    )
+
+                else:
+
+                    status.update(
+                        label="Request failed",
+                        state="error",
+                        expanded=True,
+                    )
+
+
+            if final_result:
 
                 st.session_state.chat_history.append({
                     "question": question,
-                    "answer": data["answer"],
-                    "sources": data["sources"],
-                    "confidence": data["confidence"],
+                    "answer": final_result["answer"],
+                    "sources": final_result["sources"],
+                    "confidence": final_result["confidence"],
+                    "steps": steps,
                 })
 
                 st.rerun()
 
-            else:
+            elif not response.ok:
 
                 st.error(
                     f"Request failed: {response.text}"

@@ -1,6 +1,7 @@
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from document_ingestion import extract_document
+from pii_redaction import redact_pii
 
 
 CHUNK_SIZE = 1000
@@ -22,7 +23,7 @@ def chunk_document(content: list[dict]) -> list[dict]:
 
     for item in content:
 
-        text = item["text"].strip()
+        text = redact_pii(item["text"].strip())
 
         if not text:
             continue
@@ -114,8 +115,7 @@ def chunk_document(content: list[dict]) -> list[dict]:
 if __name__ == "__main__":
 
     pdf_file = (
-        "uploads/atlassian/"
-        "Cloud_Security_Shared_Responsibilities.pdf"
+        "/Users/saramamatha/Projects_Sara/DocIntel/backend/uploads/it_support_policy_pii_test.txt"
     )
 
     # 1. Extract

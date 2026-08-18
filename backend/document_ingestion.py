@@ -2,12 +2,38 @@ import io
 from pathlib import Path
 import pymupdf
 import pytesseract
+import docx
 from PIL import Image
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 
-def extract_document(pdf_file: str) -> list[dict]:
+def extract_document(file_path: str) -> list[dict]:
+    """
+    Extract content from a document, dispatching to the right
+    extractor based on file extension. All extractors return
+    the same normalized list-of-dicts shape, so nothing else in
+    the pipeline (chunking, embedding, classification) needs to
+    know or care what format a document originally was.
+    """
+
+    extension = Path(file_path).suffix.lower()
+
+    if extension == ".pdf":
+        return extract_pdf(file_path)
+
+    if extension == ".docx":
+        return extract_docx(file_path)
+
+    if extension in (".txt", ".md"):
+        return extract_plain_text(file_path)
+
+    raise ValueError(
+        f"Unsupported file type: {extension}"
+    )
+
+
+def extract_pdf(pdf_file: str) -> list[dict]:
     """
     Extract text, tables, and OCR text from images in a PDF.
     Returns a normalized list of content items.
@@ -137,6 +163,68 @@ def extract_document(pdf_file: str) -> list[dict]:
     document.close()
 
     return content
+
+
+def extract_plain_text(file_path: str) -> list[dict]:
+    """
+    Extract content from a .txt or .md file. Neither format
+    needs a parsing library — Markdown syntax is left as-is in
+    the text rather than stripped, same as how PDF extraction
+    doesn't try to interpret formatting beyond raw text.
+
+    There's no real concept of "pages" in a plain text file, so
+    the whole file is treated as a single page.
+    """
+
+    document_name = Path(file_path).name
+
+    text = Path(file_path).read_text(
+        encoding="utf-8",
+        errors="ignore",
+    )
+
+    if not text.strip():
+        return []
+
+    return [{
+        "text": text.strip(),
+        "document_name": document_name,
+        "page_number": 1,
+        "content_type": "text",
+    }]
+
+
+def extract_docx(file_path: str) -> list[dict]:
+    """
+    Extract content from a Word (.docx) file by joining its
+    paragraphs into one block of text. Word doesn't expose page
+    breaks in a way that's reliably extractable without actually
+    rendering the document, so — same as plain text — the whole
+    file is treated as a single page.
+    """
+
+    document_name = Path(file_path).name
+
+    word_document = docx.Document(file_path)
+
+    paragraphs = [
+        paragraph.text.strip()
+        for paragraph in word_document.paragraphs
+        if paragraph.text.strip()
+    ]
+
+    text = "\n".join(paragraphs)
+
+    if not text.strip():
+        return []
+
+    return [{
+        "text": text,
+        "document_name": document_name,
+        "page_number": 1,
+        "content_type": "text",
+    }]
+
 
 #Extract text from a URL
 def extract_webpage(url: str) -> list[dict]:

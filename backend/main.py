@@ -1,10 +1,12 @@
 import hashlib
+import json
 import logging
 import time
 from pathlib import Path
 
 import requests
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from document_ingestion import extract_webpage
@@ -72,6 +74,13 @@ UPLOAD_DIR.mkdir(
     exist_ok=True
 )
 
+ALLOWED_UPLOAD_EXTENSIONS = (
+    ".pdf",
+    ".txt",
+    ".docx",
+    ".md",
+)
+
 
 # ============================================================
 # 3. Request models
@@ -108,7 +117,7 @@ def home():
 
 
 # ============================================================
-# 5. Upload PDF file
+# 5. Upload a document (PDF, TXT, DOCX, or MD)
 # ============================================================
 
 @app.post("/documents/upload")
@@ -116,13 +125,18 @@ async def upload_document(
     file: UploadFile = File(...)
 ):
 
-    # Check PDF
-    if not file.filename.lower().endswith(".pdf"):
+    # Check file type
+    if not file.filename.lower().endswith(ALLOWED_UPLOAD_EXTENSIONS):
 
         raise HTTPException(
             status_code=400,
-            detail="Only PDF files are supported."
+            detail=(
+                "Unsupported file type. Allowed: "
+                f"{', '.join(ALLOWED_UPLOAD_EXTENSIONS)}"
+            )
         )
+
+    document_type = Path(file.filename).suffix.lower().lstrip(".")
 
     # Read bytes once, so they can be hashed and then saved
     file_bytes = await file.read()
@@ -152,7 +166,7 @@ async def upload_document(
                 "skipped."
             ),
 
-            "document_type": "pdf",
+            "document_type": document_type,
 
             "chunks_stored": 0,
         }
@@ -160,12 +174,12 @@ async def upload_document(
     # Create file path
     file_path = UPLOAD_DIR / file.filename
 
-    # Save uploaded PDF
+    # Save uploaded file
     with file_path.open("wb") as buffer:
 
         buffer.write(file_bytes)
 
-    # Ingest PDF into ChromaDB
+    # Ingest document into ChromaDB
     result = ingest_document(
         str(file_path),
         source_hash=source_hash,
@@ -188,7 +202,7 @@ async def upload_document(
             "indexed successfully"
         ),
 
-        "document_type": "pdf",
+        "document_type": document_type,
 
         "chunks_stored": result["chunks_stored"],
 
@@ -537,16 +551,35 @@ def remove_document(
 # 9. Ask question
 # ============================================================
 
-@app.post("/ask")
-def ask_question(
-    request: QuestionRequest
-):
+def stream_ndjson(event: dict) -> str:
+    """
+    One line of newline-delimited JSON. NDJSON rather than full
+    Server-Sent Events — no extra protocol ceremony needed since
+    both ends of this stream are ours (FastAPI -> Streamlit).
+    """
+
+    return json.dumps(event) + "\n"
+
+
+def run_ask_pipeline(request: QuestionRequest):
+    """
+    Generator version of the ask pipeline: yields one status
+    line per real stage as it actually completes, then a final
+    result line. Every stage here is genuine — if the guardrail
+    skips the LLM, fewer lines are yielded, not a fixed fake
+    sequence.
+    """
 
     start_time = time.time()
 
-    # --------------------------------------------------------
+    # ----------------------------------------------------------
     # Step 1: Retrieve relevant chunks
-    # --------------------------------------------------------
+    # ----------------------------------------------------------
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": "Retrieving relevant documents...",
+    })
 
     retrieved_chunks = retrieve_documents(
         request.question,
@@ -554,7 +587,7 @@ def ask_question(
     )
 
 
-    # --------------------------------------------------------
+    # ----------------------------------------------------------
     # Step 2: Guardrail — check confidence BEFORE calling the
     # LLM. "Critical" band has, in every case tested, meant the
     # question is genuinely unanswerable from this corpus — so
@@ -565,9 +598,18 @@ def ask_question(
     # either a real answer or a refusal), so that judgment call
     # is left to the LLM rather than guessed at from confidence
     # alone.
-    # --------------------------------------------------------
+    # ----------------------------------------------------------
 
     confidence = compute_confidence(retrieved_chunks)
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": (
+            f"Found {len(retrieved_chunks)} chunks — "
+            f"confidence {confidence['percent']}% "
+            f"({confidence['band']})"
+        ),
+    })
 
     if confidence["band"] == "critical":
 
@@ -580,21 +622,35 @@ def ask_question(
             f"{elapsed:.2f}s"
         )
 
-        return {
+        yield stream_ndjson({
+            "type": "status",
+            "message": (
+                "Confidence too low — skipping answer "
+                f"generation ({elapsed:.2f}s)"
+            ),
+        })
 
-            "question": request.question,
+        yield stream_ndjson({
+            "type": "result",
+            "data": {
+                "question": request.question,
+                "answer": NO_ANSWER_MESSAGE,
+                "sources": [],
+                "confidence": confidence,
+            },
+        })
 
-            "answer": NO_ANSWER_MESSAGE,
-
-            "sources": [],
-
-            "confidence": confidence,
-        }
+        return
 
 
-    # --------------------------------------------------------
+    # ----------------------------------------------------------
     # Step 3: Send chunks to LLM
-    # --------------------------------------------------------
+    # ----------------------------------------------------------
+
+    yield stream_ndjson({
+        "type": "status",
+        "message": "Generating answer...",
+    })
 
     answer = call_llm(
         request.question,
@@ -606,9 +662,9 @@ def ask_question(
     )
 
 
-    # --------------------------------------------------------
+    # ----------------------------------------------------------
     # Step 4: Prepare sources
-    # --------------------------------------------------------
+    # ----------------------------------------------------------
 
     sources = []
 
@@ -643,14 +699,16 @@ def ask_question(
         sources.append(source)
 
 
-    # --------------------------------------------------------
+    # ----------------------------------------------------------
     # Step 5: The LLM can still refuse even when retrieval
     # wasn't confidently bad enough to skip calling it (e.g. a
     # borderline "warn"-band retrieval). When that happens,
     # correct the confidence and sources after the fact — they
     # were computed from retrieval alone and don't know the LLM
     # ended up finding nothing usable in them.
-    # --------------------------------------------------------
+    # ----------------------------------------------------------
+
+    elapsed = time.time() - start_time
 
     if answer.strip() == NO_ANSWER_MESSAGE:
 
@@ -661,12 +719,28 @@ def ask_question(
 
         sources = []
 
+        yield stream_ndjson({
+            "type": "status",
+            "message": (
+                "Model found no usable answer in the "
+                f"retrieved content ({elapsed:.2f}s)"
+            ),
+        })
 
-    # --------------------------------------------------------
-    # Step 6: Return answer + sources + confidence
-    # --------------------------------------------------------
+    else:
 
-    elapsed = time.time() - start_time
+        yield stream_ndjson({
+            "type": "status",
+            "message": (
+                f"Answer generated ({len(sources)} sources) "
+                f"in {elapsed:.2f}s"
+            ),
+        })
+
+
+    # ----------------------------------------------------------
+    # Step 6: Yield the final result
+    # ----------------------------------------------------------
 
     logger.info(
         f"Ask (LLM called): "
@@ -676,13 +750,23 @@ def ask_question(
         f"{elapsed:.2f}s"
     )
 
-    return {
+    yield stream_ndjson({
+        "type": "result",
+        "data": {
+            "question": request.question,
+            "answer": answer,
+            "sources": sources,
+            "confidence": confidence,
+        },
+    })
 
-        "question": request.question,
 
-        "answer": answer,
+@app.post("/ask")
+def ask_question(
+    request: QuestionRequest
+):
 
-        "sources": sources,
-
-        "confidence": confidence,
-    }
+    return StreamingResponse(
+        run_ask_pipeline(request),
+        media_type="application/x-ndjson",
+    )
