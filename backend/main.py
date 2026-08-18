@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 import requests
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -98,6 +98,7 @@ class QuestionRequest(BaseModel):
 
 class URLRequest(BaseModel):
     url: str
+    company: str
 
 
 class DocumentDeleteRequest(BaseModel):
@@ -122,7 +123,8 @@ def home():
 
 @app.post("/documents/upload")
 async def upload_document(
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    company: str = Form(...),
 ):
 
     # Check file type
@@ -183,12 +185,14 @@ async def upload_document(
     result = ingest_document(
         str(file_path),
         source_hash=source_hash,
+        company=company,
     )
 
     logger.info(
         f"Upload indexed: {file.filename} "
         f"({result['chunks_stored']} chunks, "
-        f"category={result['category']})"
+        f"category={result['category']}, "
+        f"company={company})"
     )
 
     return {
@@ -209,6 +213,8 @@ async def upload_document(
         "category": result["category"],
 
         "summary": result["summary"],
+
+        "company": result["company"],
     }
 
 
@@ -333,12 +339,14 @@ def upload_document_from_url(
         result = ingest_document(
             str(file_path),
             source_hash=source_hash,
+            company=request.company,
         )
 
         logger.info(
             f"URL upload indexed: {url} "
             f"({result['chunks_stored']} chunks, "
-            f"category={result['category']})"
+            f"category={result['category']}, "
+            f"company={request.company})"
         )
 
         return {
@@ -361,6 +369,8 @@ def upload_document_from_url(
             "category": result["category"],
 
             "summary": result["summary"],
+
+            "company": result["company"],
         }
 
 
@@ -419,6 +429,9 @@ def upload_document_from_url(
                 chunks
             )
 
+            for chunk in chunks:
+                chunk["company"] = request.company
+
             # Store in ChromaDB
             # (embeddings are computed internally by the vectorstore)
             stored_chunks = store_chunks(
@@ -442,7 +455,8 @@ def upload_document_from_url(
         logger.info(
             f"URL upload indexed: {url} "
             f"({stored_chunks} chunks, "
-            f"category={chunks[0]['category'] if chunks else 'Other'})"
+            f"category={chunks[0]['category'] if chunks else 'Other'}, "
+            f"company={request.company})"
         )
 
         return {
@@ -469,6 +483,8 @@ def upload_document_from_url(
             "summary": (
                 chunks[0]["summary"] if chunks else ""
             ),
+
+            "company": request.company,
         }
 
 

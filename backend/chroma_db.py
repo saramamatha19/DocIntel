@@ -26,7 +26,11 @@ vectorstore = Chroma(
 
 # 3. Process ONE document
 
-def process_document(file_path: str, source_hash: str | None = None):
+def process_document(
+    file_path: str,
+    source_hash: str | None = None,
+    company: str | None = None,
+):
 
     print(f"\nProcessing: {file_path}")
 
@@ -50,6 +54,13 @@ def process_document(file_path: str, source_hash: str | None = None):
 
         for chunk in chunks:
             chunk["source_hash"] = source_hash
+
+    # Company is user-provided at upload time, not LLM-derived
+    # like category/summary, so it's stamped on separately.
+    if company:
+
+        for chunk in chunks:
+            chunk["company"] = company
 
     chunks = classify_and_summarize(chunks)
 
@@ -109,6 +120,9 @@ def store_chunks(chunks):
         if "summary" in chunk:
             metadata["summary"] = chunk["summary"]
 
+        if "company" in chunk:
+            metadata["company"] = chunk["company"]
+
         ids.append(chunk["chunk_id"])
 
         documents.append(
@@ -132,11 +146,16 @@ def store_chunks(chunks):
 
 # 5. Ingest ONE document
 
-def ingest_document(file_path: str, source_hash: str | None = None):
+def ingest_document(
+    file_path: str,
+    source_hash: str | None = None,
+    company: str | None = None,
+):
 
     chunks = process_document(
         file_path,
         source_hash=source_hash,
+        company=company,
     )
 
     stored_count = store_chunks(
@@ -147,6 +166,9 @@ def ingest_document(file_path: str, source_hash: str | None = None):
         "chunks_stored": stored_count,
         "category": chunks[0]["category"] if chunks else "Other",
         "summary": chunks[0]["summary"] if chunks else "",
+        "company": (
+            chunks[0].get("company", "Unknown") if chunks else "Unknown"
+        ),
     }
 
 
@@ -232,6 +254,7 @@ def list_documents():
                 "chunks": 0,
                 "category": metadata.get("category", "Other"),
                 "summary": metadata.get("summary", ""),
+                "company": metadata.get("company", "Unknown"),
             }
 
         info[name]["chunks"] += 1
@@ -242,6 +265,7 @@ def list_documents():
             "chunks": doc_info["chunks"],
             "category": doc_info["category"],
             "summary": doc_info["summary"],
+            "company": doc_info["company"],
         }
         for name, doc_info in sorted(info.items())
     ]

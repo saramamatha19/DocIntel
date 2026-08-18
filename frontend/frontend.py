@@ -236,6 +236,16 @@ if "recent_uploads" not in st.session_state:
 
 st.sidebar.header("📄 Add Documents")
 
+company_name = st.sidebar.text_input(
+    "Company",
+    value="Unknown",
+    help=(
+        "Which company these documents belong to — typed by "
+        "you, not guessed from the file, since you already know "
+        "this when you upload."
+    ),
+)
+
 uploaded_files = st.sidebar.file_uploader(
     "Upload documents",
     type=["pdf", "txt", "docx", "md"],
@@ -245,7 +255,13 @@ uploaded_files = st.sidebar.file_uploader(
 
 if st.sidebar.button("Upload & Index"):
 
-    if not uploaded_files:
+    if not company_name.strip():
+
+        st.sidebar.warning(
+            "Please enter a company name."
+        )
+
+    elif not uploaded_files:
 
         st.sidebar.warning(
             "Please select at least one PDF first."
@@ -273,6 +289,7 @@ if st.sidebar.button("Upload & Index"):
                 response = requests.post(
                     f"{API_URL}/documents/upload",
                     files=files,
+                    data={"company": company_name.strip()},
                     timeout=120,
                 )
 
@@ -347,7 +364,13 @@ pdf_url = st.sidebar.text_input(
 
 if st.sidebar.button("Download & Index"):
 
-    if not pdf_url:
+    if not company_name.strip():
+
+        st.sidebar.warning(
+            "Please enter a company name above."
+        )
+
+    elif not pdf_url:
 
         st.sidebar.warning(
             "Please enter a PDF URL."
@@ -362,7 +385,8 @@ if st.sidebar.button("Download & Index"):
             response = requests.post(
                 f"{API_URL}/documents/upload-url",
                 json={
-                    "url": pdf_url
+                    "url": pdf_url,
+                    "company": company_name.strip(),
                 },
                 timeout=120,
             )
@@ -643,49 +667,73 @@ with tab_documents:
                 "Upload one from the sidebar."
             )
 
-        for doc in documents_data["documents"]:
+        else:
 
-            col1, col2, col3, col4 = st.columns([4, 2, 2, 1])
+            # Group by company so each one gets its own
+            # collapsible section instead of one flat list.
+            companies = {}
 
-            with col1:
-                st.write(doc["document_name"])
+            for doc in documents_data["documents"]:
 
-            with col2:
-                render_category_badge(
-                    doc.get("category", "Other")
-                )
+                company = doc.get("company", "Unknown")
 
-            with col3:
-                st.write(f"{doc['chunks']} chunks")
+                companies.setdefault(company, []).append(doc)
 
-            with col4:
+            for company, docs in sorted(companies.items()):
 
-                if st.button(
-                    "Delete",
-                    key=f"delete_{doc['document_name']}",
+                with st.expander(
+                    f"🏢 {company} — {len(docs)} documents",
+                    expanded=True,
                 ):
 
-                    delete_response = requests.delete(
-                        f"{API_URL}/documents",
-                        json={
-                            "document_name": doc["document_name"]
-                        },
-                        timeout=30,
-                    )
+                    for doc in docs:
 
-                    if delete_response.ok:
-
-                        st.success(
-                            f"Deleted {doc['document_name']}"
+                        col1, col2, col3, col4 = st.columns(
+                            [4, 2, 2, 1]
                         )
 
-                        st.rerun()
+                        with col1:
+                            st.write(doc["document_name"])
 
-                    else:
+                        with col2:
+                            render_category_badge(
+                                doc.get("category", "Other")
+                            )
 
-                        st.error(
-                            f"Delete failed: {delete_response.text}"
-                        )
+                        with col3:
+                            st.write(f"{doc['chunks']} chunks")
+
+                        with col4:
+
+                            if st.button(
+                                "Delete",
+                                key=f"delete_{doc['document_name']}",
+                            ):
+
+                                delete_response = requests.delete(
+                                    f"{API_URL}/documents",
+                                    json={
+                                        "document_name": (
+                                            doc["document_name"]
+                                        )
+                                    },
+                                    timeout=30,
+                                )
+
+                                if delete_response.ok:
+
+                                    st.success(
+                                        f"Deleted {doc['document_name']}"
+                                    )
+
+                                    st.rerun()
+
+                                else:
+
+                                    st.error(
+                                        "Delete failed: "
+                                        f"{delete_response.text}"
+                                    )
 
     else:
 
