@@ -1,23 +1,24 @@
 from chroma_db import vectorstore
 
 
-# 1. Retrieve relevant chunks using LangChain's standard
-#    Retriever interface
+# 1. Retrieve relevant chunks, keeping each one's raw distance
+#    score so answer confidence can be computed from it later.
+#    (similarity_search_with_score returns (Document, distance)
+#    pairs — lower distance means a closer/better match.)
 
 def retrieve_documents(
     query: str,
     top_k: int = 5,
 ) -> list[dict]:
 
-    retriever = vectorstore.as_retriever(
-        search_kwargs={"k": top_k}
+    results = vectorstore.similarity_search_with_score(
+        query,
+        k=top_k,
     )
-
-    documents = retriever.invoke(query)
 
     retrieved_chunks = []
 
-    for document in documents:
+    for document, distance in results:
 
         metadata = document.metadata
 
@@ -27,6 +28,7 @@ def retrieve_documents(
             "document_name": metadata["document_name"],
             "page_number": metadata["page_number"],
             "content_type": metadata["content_type"],
+            "score": distance,
         }
 
         # Preserve webpage URL if available
@@ -38,7 +40,70 @@ def retrieve_documents(
     return retrieved_chunks
 
 
-# 3. Test retrieval
+# 2. Convert a raw distance score into a 0-100 confidence value.
+#
+#    The floor/ceiling below are calibrated from real queries run
+#    against this project's data, not a theoretical formula:
+#    a clearly-relevant match scored ~0.37-0.73, while clearly
+#    irrelevant queries scored ~1.2-1.8. This is a *relative*
+#    retrieval-quality signal, not a calibrated probability that
+#    the answer is correct.
+
+CONFIDENCE_FLOOR = 0.3
+CONFIDENCE_CEILING = 1.8
+
+
+def score_to_confidence(distance: float) -> int:
+
+    clamped = max(
+        CONFIDENCE_FLOOR,
+        min(distance, CONFIDENCE_CEILING),
+    )
+
+    ratio = (
+        (CONFIDENCE_CEILING - clamped)
+        / (CONFIDENCE_CEILING - CONFIDENCE_FLOOR)
+    )
+
+    return round(ratio * 100)
+
+
+def confidence_band(percent: int) -> str:
+
+    if percent >= 63:
+        return "good"
+
+    if percent >= 33:
+        return "warn"
+
+    return "critical"
+
+
+# 3. Compute one overall confidence value for an answer, based
+#    on the single best (lowest-distance) retrieved chunk.
+
+def compute_confidence(retrieved_chunks: list[dict]) -> dict:
+
+    if not retrieved_chunks:
+
+        return {
+            "percent": 0,
+            "band": "critical",
+        }
+
+    best_score = min(
+        chunk["score"] for chunk in retrieved_chunks
+    )
+
+    percent = score_to_confidence(best_score)
+
+    return {
+        "percent": percent,
+        "band": confidence_band(percent),
+    }
+
+
+# 4. Test retrieval
 
 if __name__ == "__main__":
 
@@ -81,6 +146,10 @@ if __name__ == "__main__":
             f"Content type: {result['content_type']}"
         )
 
+        print(
+            f"Score (raw distance): {result['score']:.4f}"
+        )
+
         if "url" in result:
             print(
                 f"URL: {result['url']}"
@@ -89,3 +158,11 @@ if __name__ == "__main__":
         print(
             f"\n{result['text']}"
         )
+
+    print("\n==============================")
+    print("ANSWER CONFIDENCE")
+    print("==============================")
+
+    print(
+        compute_confidence(results)
+    )

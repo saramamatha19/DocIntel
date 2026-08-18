@@ -15,8 +15,8 @@ from chroma_db import (
     find_duplicate,
 )
 
-from retriever import retrieve_documents
-from call_llm import call_llm
+from retriever import retrieve_documents, compute_confidence
+from call_llm import call_llm, NO_ANSWER_MESSAGE
 
 
 # ============================================================
@@ -487,6 +487,10 @@ def ask_question(
             "chunk_id": (
                 chunk["chunk_id"]
             ),
+
+            "text": (
+                chunk["text"]
+            ),
         }
 
         if "url" in chunk:
@@ -496,7 +500,25 @@ def ask_question(
 
 
     # --------------------------------------------------------
-    # Step 4: Return answer + sources
+    # Step 4: Compute overall answer confidence
+    # --------------------------------------------------------
+
+    confidence = compute_confidence(retrieved_chunks)
+
+    # Retrieval can score a chunk as a decent match even when the
+    # LLM correctly finds no real answer in it. When the entire
+    # answer is just that refusal, the confidence shown should
+    # reflect "no answer given," not the unrelated retrieval score.
+    if answer.strip() == NO_ANSWER_MESSAGE:
+
+        confidence = {
+            "percent": 0,
+            "band": "critical",
+        }
+
+
+    # --------------------------------------------------------
+    # Step 5: Return answer + sources + confidence
     # --------------------------------------------------------
 
     return {
@@ -506,4 +528,6 @@ def ask_question(
         "answer": answer,
 
         "sources": sources,
+
+        "confidence": confidence,
     }

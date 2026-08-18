@@ -11,6 +11,14 @@ load_dotenv()
 # 2. Create the chat model (via LangChain)
 llm = ChatOpenAI(model="gpt-4o-mini")
 
+# Must stay in sync with the refusal instruction inside
+# PROMPT_TEMPLATE below. main.py compares the LLM's raw
+# output against this exact string to detect a "no answer"
+# response and override its confidence display accordingly.
+NO_ANSWER_MESSAGE = (
+    "I could not find this information in the provided documents."
+)
+
 # 3. Prompt template — same rules/format as before, expressed
 #    as a LangChain ChatPromptTemplate instead of a raw f-string
 PROMPT_TEMPLATE = ChatPromptTemplate.from_template(
@@ -26,31 +34,38 @@ Rules:
 - If the answer is not present in the provided context, say:
   "I could not find this information in the provided documents."
 
-- If the question asks about multiple topics, answer each topic separately.
-- If information comes from different documents, keep the topics separate.
-- Do NOT combine information from different documents into one unsupported claim.
+- Only split your answer into separate "### Topic" sections when
+  the user's question itself asks about genuinely distinct things
+  (e.g. "compare X and Y", or "what about A, and also B?").
+- For a single, broad question (e.g. "tell me about X"), write one
+  flowing answer instead — do NOT invent topic sections just
+  because the supporting passages happen to come from different
+  documents. Inline [N] citations already show which source backs
+  each individual claim, so topic-splitting is not needed to avoid
+  mixing sources together.
+- Do NOT combine information from different documents into one
+  unsupported claim.
+- If a source's "Content type" is "table", never paste its raw
+  pipe-delimited row text into your answer. Either state the
+  specific fact needed as a normal sentence, or, if showing the
+  whole table is genuinely useful, reformat it as a clean markdown
+  table (using proper markdown table syntax) — not the raw
+  extracted rows.
 
 SOURCE CITATION RULES:
 
-- Every factual section must have its own source.
-- A single answer may contain multiple sources.
-- Check the "Content type" line of the chunk you are citing, and
-  follow the matching rule below:
-
-  - If Content type is "webpage":
-    You MUST cite the exact value that appears after "URL:" in that
-    chunk. Do NOT cite the "Document" field for webpage content,
-    even though a document name is also present.
-    **Source:** https://example.com/page
-
-  - If Content type is "text", "table", or "image_ocr" (i.e. any
-    PDF-derived content, there is no "URL:" line):
-    Cite the document name and page number.
-    **Source:** Document_Name.pdf, Page X.
-
-- Do not cite a URL just because the URL appears inside a PDF.
-- Do not cite a document or page that does not support the statement.
-- Do not create or guess page numbers.
+- Below, each retrieved passage is labeled "Source 1", "Source 2",
+  and so on. Cite a source by writing its number in square brackets,
+  e.g. [1], immediately after the specific clause or sentence it
+  supports.
+- Place the bracket marker inline, mid-sentence if needed. Do NOT
+  collect citations together at the end of a paragraph.
+- A single sentence may need more than one marker if two sources
+  both support it, e.g. "...within 90 days [1][3]."
+- Only cite a source number that actually supports the exact
+  statement next to it. Do not cite a source that does not support
+  the claim, and do not invent source numbers that were not given
+  to you below.
 
 CONVERSATION HISTORY:
 
@@ -58,35 +73,36 @@ CONVERSATION HISTORY:
   referring to (e.g. pronouns like "it", or follow-up phrases like
   "what about page 3?").
 - Do NOT treat the conversation history as a source of facts. Facts
-  must come only from the document context below.
+  must come only from the numbered sources below.
 
 Conversation so far (most recent last):
 {chat_history}
 
-FORMAT:
+FORMAT EXAMPLES:
+
+A single, broad question — write one flowing answer:
+
+Atlassian provides cloud and software products for internal
+business use [1]. It maintains a shared responsibility model in
+which Atlassian secures the underlying infrastructure while
+customers manage their own users and data [2][3].
+
+A question that genuinely asks about multiple distinct things
+(e.g. "compare X and Y", or "what about A, and also B?"):
 
 ### Topic 1
 
-Answer based only on the retrieved context.
+Atlassian retains customer data for 90 days after termination [1].
 
-**Source:** Document_Name.pdf, Page X.
+### Topic 2
 
-### Topic 2 (example when the source is a webpage)
-
-Answer based only on the retrieved context.
-
-**Source:** https://example.com/page
-
-If multiple pages from the same document support a topic,
-you may cite them together:
-
-**Source:** Document_Name.pdf, Pages X-Y.
+Answer based only on the retrieved context [2][3].
 
 
 User question:
 {question}
 
-Document context:
+Numbered sources:
 {context}
 """
 )
@@ -123,11 +139,17 @@ def call_llm(
     document chunks. `chat_history` (previous
     question/answer turns) is used only to resolve
     follow-up references, not as a source of facts.
+
+    Sources are numbered in the same order as
+    `retrieved_chunks`, so a [N] marker in the answer
+    always corresponds to retrieved_chunks[N-1] — the
+    same order main.py uses to build its `sources` list,
+    so the frontend can map [N] straight to sources[N-1].
     """
 
     context_parts = []
 
-    for chunk in retrieved_chunks:
+    for index, chunk in enumerate(retrieved_chunks, start=1):
 
         url_line = (
             f'URL: {chunk["url"]}\n'
@@ -137,6 +159,7 @@ def call_llm(
 
         context_parts.append(
             f"""
+Source {index}:
 Document: {chunk["document_name"]}
 Page: {chunk["page_number"]}
 Content type: {chunk["content_type"]}

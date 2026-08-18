@@ -63,10 +63,20 @@ def extract_document(pdf_file: str) -> list[dict]:
                 table_lines = []
 
                 for row in table_data:
-                    row_text = " | ".join(
+
+                    cells = [
                         str(cell).strip() if cell is not None else ""
                         for cell in row
-                    )
+                    ]
+
+                    # A row that's really a caption/footnote (real
+                    # content only in the first cell) otherwise
+                    # leaves a dangling "|  |" from its empty
+                    # trailing cells once joined.
+                    while cells and not cells[-1]:
+                        cells.pop()
+
+                    row_text = " | ".join(cells)
 
                     table_lines.append(row_text)
 
