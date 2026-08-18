@@ -1,29 +1,17 @@
 import streamlit as st
 import requests
 
-
-# -----------------------------
 # Configuration
-# -----------------------------
-
 API_URL = "http://127.0.0.1:8000"
 
-
-# -----------------------------
 # Page configuration
-# -----------------------------
-
 st.set_page_config(
     page_title="DocIntel",
     page_icon="📚",
     layout="wide",
 )
 
-
-# -----------------------------
 # Header
-# -----------------------------
-
 st.title("📚 DocIntel")
 
 st.write(
@@ -31,9 +19,7 @@ st.write(
 )
 
 
-# -----------------------------
 # Sidebar - Document Upload
-# -----------------------------
 
 st.sidebar.header("📄 Add Document")
 
@@ -76,17 +62,25 @@ if st.sidebar.button("Upload & Index"):
 
             data = response.json()
 
-            st.sidebar.success(
-                "Document indexed successfully!"
-            )
+            if data.get("duplicate"):
 
-            st.sidebar.write(
-                f"**File:** {data['filename']}"
-            )
+                st.sidebar.warning(
+                    data["message"]
+                )
 
-            st.sidebar.write(
-                f"**Chunks:** {data['chunks_stored']}"
-            )
+            else:
+
+                st.sidebar.success(
+                    "Document indexed successfully!"
+                )
+
+                st.sidebar.write(
+                    f"**File:** {data['filename']}"
+                )
+
+                st.sidebar.write(
+                    f"**Chunks:** {data['chunks_stored']}"
+                )
 
         else:
 
@@ -95,9 +89,7 @@ if st.sidebar.button("Upload & Index"):
             )
 
 
-# -----------------------------
 # URL Upload
-# -----------------------------
 
 st.sidebar.header("🌐 Add PDF from URL")
 
@@ -133,17 +125,25 @@ if st.sidebar.button("Download & Index"):
 
             data = response.json()
 
-            st.sidebar.success(
-                "PDF indexed successfully!"
-            )
+            if data.get("duplicate"):
 
-            st.sidebar.write(
-                f"**File:** {data['filename']}"
-            )
+                st.sidebar.warning(
+                    data["message"]
+                )
 
-            st.sidebar.write(
-                f"**Chunks:** {data['chunks_stored']}"
-            )
+            else:
+
+                st.sidebar.success(
+                    "PDF indexed successfully!"
+                )
+
+                st.sidebar.write(
+                    f"**File:** {data['filename']}"
+                )
+
+                st.sidebar.write(
+                    f"**Chunks:** {data['chunks_stored']}"
+                )
 
         else:
 
@@ -152,131 +152,209 @@ if st.sidebar.button("Download & Index"):
             )
 
 
-# -----------------------------
-# Main - Ask Question
-# -----------------------------
+# ============================================================
+# Main area - Chat / Documents tabs
+# ============================================================
 
-st.header("💬 Ask your documents")
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-if "question_input_id" not in st.session_state:
-    st.session_state.question_input_id = 0
+tab_chat, tab_documents = st.tabs([
+    "💬 Chat",
+    "📁 Documents",
+])
 
 
-# -----------------------------
-# Render previous turns (answers + sources)
-# -----------------------------
+# ------------------------------------------------------------
+# Chat tab
+# ------------------------------------------------------------
 
-for turn in st.session_state.chat_history:
+with tab_chat:
 
-    st.subheader("💡 Answer")
+    st.header("💬 Ask your documents")
 
-    st.write(
-        turn["answer"]
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+
+    # Render previous turns (answers + sources)
+
+    for turn in st.session_state.chat_history:
+
+        with st.chat_message("user"):
+
+            st.write(
+                turn["question"]
+            )
+
+        with st.chat_message("assistant"):
+
+            st.write(
+                turn["answer"]
+            )
+
+            st.subheader("📑 Sources")
+
+            for index, source in enumerate(
+                turn["sources"],
+                start=1,
+            ):
+
+                with st.expander(
+                    f"Source {index}: "
+                    f"{source['document_name']} "
+                    f"(Page {source['page_number']})"
+                ):
+
+                    st.write(
+                        f"**Document:** "
+                        f"{source['document_name']}"
+                    )
+
+                    st.write(
+                        f"**Page:** "
+                        f"{source['page_number']}"
+                    )
+
+                    st.write(
+                        f"**Content type:** "
+                        f"{source['content_type']}"
+                    )
+
+                    if "url" in source:
+
+                        st.write(
+                            f"**URL:** "
+                            f"{source['url']}"
+                        )
+
+                    st.write(
+                        f"**Chunk ID:** "
+                        f"{source['chunk_id']}"
+                    )
+
+
+    question = st.chat_input(
+        "Enter your question here..."
     )
 
-    st.subheader("📑 Sources")
 
-    for index, source in enumerate(
-        turn["sources"],
-        start=1,
-    ):
+    if question:
 
-        with st.expander(
-            f"Source {index}: "
-            f"{source['document_name']} "
-            f"(Page {source['page_number']})"
-        ):
+        with st.chat_message("user"):
 
             st.write(
-                f"**Document:** "
-                f"{source['document_name']}"
+                question
             )
 
-            st.write(
-                f"**Page:** "
-                f"{source['page_number']}"
-            )
+        with st.chat_message("assistant"):
 
-            st.write(
-                f"**Content type:** "
-                f"{source['content_type']}"
-            )
+            with st.spinner(
+                "Searching documents and generating answer..."
+            ):
 
-            if "url" in source:
-
-                st.write(
-                    f"**URL:** "
-                    f"{source['url']}"
+                response = requests.post(
+                    f"{API_URL}/ask",
+                    json={
+                        "question": question,
+                        "chat_history": [
+                            {
+                                "question": turn["question"],
+                                "answer": turn["answer"],
+                            }
+                            for turn in st.session_state.chat_history
+                        ],
+                    },
+                    timeout=120,
                 )
 
-            st.write(
-                f"**Chunk ID:** "
-                f"{source['chunk_id']}"
+
+            if response.ok:
+
+                data = response.json()
+
+                st.session_state.chat_history.append({
+                    "question": question,
+                    "answer": data["answer"],
+                    "sources": data["sources"],
+                })
+
+                st.rerun()
+
+            else:
+
+                st.error(
+                    f"Request failed: {response.text}"
+                )
+
+
+# ------------------------------------------------------------
+# Documents tab
+# ------------------------------------------------------------
+
+with tab_documents:
+
+    st.header("📁 Indexed documents")
+
+    documents_response = requests.get(
+        f"{API_URL}/documents",
+        timeout=30,
+    )
+
+    if documents_response.ok:
+
+        documents_data = documents_response.json()
+
+        st.write(
+            f"**{len(documents_data['documents'])} documents** · "
+            f"**{documents_data['total_chunks']} chunks**"
+        )
+
+        if not documents_data["documents"]:
+
+            st.info(
+                "No documents indexed yet. "
+                "Upload one from the sidebar."
             )
 
-    st.divider()
+        for doc in documents_data["documents"]:
 
+            col1, col2, col3 = st.columns([5, 2, 1])
 
-question = st.text_area(
-    "Ask a question or follow-up question about your documents",
-    placeholder=(
-        "Example: What are Atlassian's "
-        "security responsibilities?"
-    ),
-    height=120,
-    key=f"question_input_{st.session_state.question_input_id}",
-)
+            with col1:
+                st.write(doc["document_name"])
 
+            with col2:
+                st.write(f"{doc['chunks']} chunks")
 
-if st.button("🔍 Ask"):
+            with col3:
 
-    if not question.strip():
+                if st.button(
+                    "Delete",
+                    key=f"delete_{doc['document_name']}",
+                ):
 
-        st.warning(
-            "Please enter a question."
-        )
+                    delete_response = requests.delete(
+                        f"{API_URL}/documents",
+                        json={
+                            "document_name": doc["document_name"]
+                        },
+                        timeout=30,
+                    )
+
+                    if delete_response.ok:
+
+                        st.success(
+                            f"Deleted {doc['document_name']}"
+                        )
+
+                        st.rerun()
+
+                    else:
+
+                        st.error(
+                            f"Delete failed: {delete_response.text}"
+                        )
 
     else:
 
-        with st.spinner(
-            "Searching documents and generating answer..."
-        ):
-
-            response = requests.post(
-                f"{API_URL}/ask",
-                json={
-                    "question": question,
-                    "chat_history": [
-                        {
-                            "question": turn["question"],
-                            "answer": turn["answer"],
-                        }
-                        for turn in st.session_state.chat_history
-                    ],
-                },
-                timeout=120,
-            )
-
-
-        if response.ok:
-
-            data = response.json()
-
-            st.session_state.chat_history.append({
-                "question": question,
-                "answer": data["answer"],
-                "sources": data["sources"],
-            })
-
-            st.session_state.question_input_id += 1
-
-            st.rerun()
-
-        else:
-
-            st.error(
-                f"Request failed: {response.text}"
-            )
+        st.error(
+            f"Could not load documents: {documents_response.text}"
+        )

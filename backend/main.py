@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import requests
@@ -6,7 +7,13 @@ from pydantic import BaseModel
 
 from document_ingestion import extract_webpage
 from chunking import chunk_document
-from chroma_db import ingest_document, store_chunks
+from chroma_db import (
+    ingest_document,
+    store_chunks,
+    list_documents,
+    delete_document,
+    find_duplicate,
+)
 
 from retriever import retrieve_documents
 from call_llm import call_llm
@@ -52,6 +59,10 @@ class URLRequest(BaseModel):
     url: str
 
 
+class DocumentDeleteRequest(BaseModel):
+    document_name: str
+
+
 # ============================================================
 # 4. Home endpoint
 # ============================================================
@@ -81,24 +92,53 @@ async def upload_document(
             detail="Only PDF files are supported."
         )
 
+    # Read bytes once, so they can be hashed and then saved
+    file_bytes = await file.read()
+
+    source_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    # Check whether this exact file is already indexed
+    duplicate_name = find_duplicate(
+        source_hash=source_hash
+    )
+
+    if duplicate_name:
+
+        return {
+
+            "filename": file.filename,
+
+            "duplicate": True,
+
+            "message": (
+                f"Already indexed as '{duplicate_name}', "
+                "skipped."
+            ),
+
+            "document_type": "pdf",
+
+            "chunks_stored": 0,
+        }
+
     # Create file path
     file_path = UPLOAD_DIR / file.filename
 
     # Save uploaded PDF
     with file_path.open("wb") as buffer:
 
-        buffer.write(
-            await file.read()
-        )
+        buffer.write(file_bytes)
 
     # Ingest PDF into ChromaDB
     stored_chunks = ingest_document(
-        str(file_path)
+        str(file_path),
+        source_hash=source_hash,
     )
 
     return {
 
         "filename": file.filename,
+
+        "duplicate": False,
 
         "message": (
             "Document uploaded and "
@@ -181,6 +221,35 @@ def upload_document_from_url(
 
             filename = "downloaded_document.pdf"
 
+        source_hash = hashlib.sha256(
+            response.content
+        ).hexdigest()
+
+        # Check whether this exact file is already indexed
+        duplicate_name = find_duplicate(
+            source_hash=source_hash
+        )
+
+        if duplicate_name:
+
+            return {
+
+                "filename": filename,
+
+                "source_url": url,
+
+                "document_type": "pdf",
+
+                "duplicate": True,
+
+                "message": (
+                    f"Already indexed as '{duplicate_name}', "
+                    "skipped."
+                ),
+
+                "chunks_stored": 0,
+            }
+
         file_path = UPLOAD_DIR / filename
 
         # Save PDF
@@ -192,7 +261,8 @@ def upload_document_from_url(
 
         # Ingest PDF
         stored_chunks = ingest_document(
-            str(file_path)
+            str(file_path),
+            source_hash=source_hash,
         )
 
         return {
@@ -202,6 +272,8 @@ def upload_document_from_url(
             "source_url": url,
 
             "document_type": "pdf",
+
+            "duplicate": False,
 
             "message": (
                 "PDF downloaded and "
@@ -217,6 +289,31 @@ def upload_document_from_url(
     # ========================================================
 
     if "text/html" in content_type:
+
+        # Check whether this exact URL is already indexed
+        duplicate_name = find_duplicate(
+            url=url
+        )
+
+        if duplicate_name:
+
+            return {
+
+                "filename": duplicate_name,
+
+                "source_url": url,
+
+                "document_type": "webpage",
+
+                "duplicate": True,
+
+                "message": (
+                    f"Already indexed as '{duplicate_name}', "
+                    "skipped."
+                ),
+
+                "chunks_stored": 0,
+            }
 
         try:
 
@@ -254,6 +351,8 @@ def upload_document_from_url(
 
             "document_type": "webpage",
 
+            "duplicate": False,
+
             "message": (
                 "Webpage downloaded and "
                 "indexed successfully"
@@ -277,7 +376,61 @@ def upload_document_from_url(
 
 
 # ============================================================
-# 7. Ask question
+# 7. List documents in ChromaDB
+# ============================================================
+
+@app.get("/documents")
+def get_documents():
+
+    documents = list_documents()
+
+    total_chunks = sum(
+        doc["chunks"] for doc in documents
+    )
+
+    return {
+
+        "documents": documents,
+
+        "total_chunks": total_chunks,
+    }
+
+
+# ============================================================
+# 8. Delete a document from ChromaDB
+# ============================================================
+
+@app.delete("/documents")
+def remove_document(
+    request: DocumentDeleteRequest
+):
+
+    document_name = request.document_name
+
+    deleted_count = delete_document(document_name)
+
+    if deleted_count == 0:
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No chunks found for document "
+                f"'{document_name}'"
+            ),
+        )
+
+    return {
+
+        "document_name": document_name,
+
+        "message": "Document deleted successfully",
+
+        "chunks_deleted": deleted_count,
+    }
+
+
+# ============================================================
+# 9. Ask question
 # ============================================================
 
 @app.post("/ask")
