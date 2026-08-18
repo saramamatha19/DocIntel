@@ -6,6 +6,7 @@ from langchain_core.documents import Document
 from document_ingestion import extract_document
 from chunking import chunk_document
 from embedding import embeddings
+from call_llm import classify_document, summarize_document
 
 
 # 1. ChromaDB configuration
@@ -50,6 +51,30 @@ def process_document(file_path: str, source_hash: str | None = None):
         for chunk in chunks:
             chunk["source_hash"] = source_hash
 
+    chunks = classify_and_summarize(chunks)
+
+    return chunks
+
+
+# 3b. Classify + summarize a list of chunks, stamping the same
+#     category/summary onto every one of them (computed once
+#     from the first chunk's text). Shared by process_document()
+#     above (PDFs) and main.py's webpage upload path, since both
+#     produce the same chunk_document() output shape.
+
+def classify_and_summarize(chunks: list[dict]) -> list[dict]:
+
+    if not chunks:
+        return chunks
+
+    text_sample = chunks[0]["text"]
+    category = classify_document(text_sample)
+    summary = summarize_document(text_sample)
+
+    for chunk in chunks:
+        chunk["category"] = category
+        chunk["summary"] = summary
+
     return chunks
 
 
@@ -77,6 +102,12 @@ def store_chunks(chunks):
 
         if "source_hash" in chunk:
             metadata["source_hash"] = chunk["source_hash"]
+
+        if "category" in chunk:
+            metadata["category"] = chunk["category"]
+
+        if "summary" in chunk:
+            metadata["summary"] = chunk["summary"]
 
         ids.append(chunk["chunk_id"])
 
@@ -112,7 +143,11 @@ def ingest_document(file_path: str, source_hash: str | None = None):
         chunks
     )
 
-    return stored_count
+    return {
+        "chunks_stored": stored_count,
+        "category": chunks[0]["category"] if chunks else "Other",
+        "summary": chunks[0]["summary"] if chunks else "",
+    }
 
 
 # 5b. Check whether a document is already indexed
@@ -169,11 +204,11 @@ def ingest_all_pdfs(folder: str):
 
     for pdf_file in pdf_files:
 
-        stored_count = ingest_document(
+        result = ingest_document(
             str(pdf_file)
         )
 
-        total_stored += stored_count
+        total_stored += result["chunks_stored"]
 
     return total_stored
 
@@ -186,20 +221,29 @@ def list_documents():
         include=["metadatas"]
     )
 
-    counts = {}
+    info = {}
 
     for metadata in data["metadatas"]:
 
         name = metadata.get("document_name")
 
-        counts[name] = counts.get(name, 0) + 1
+        if name not in info:
+            info[name] = {
+                "chunks": 0,
+                "category": metadata.get("category", "Other"),
+                "summary": metadata.get("summary", ""),
+            }
+
+        info[name]["chunks"] += 1
 
     return [
         {
             "document_name": name,
-            "chunks": count,
+            "chunks": doc_info["chunks"],
+            "category": doc_info["category"],
+            "summary": doc_info["summary"],
         }
-        for name, count in sorted(counts.items())
+        for name, doc_info in sorted(info.items())
     ]
 
 

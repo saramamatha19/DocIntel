@@ -3,8 +3,6 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
-from retriever import retrieve_documents
-
 # 1. Load environment variables
 load_dotenv()
 
@@ -111,6 +109,101 @@ Numbered sources:
 chain = PROMPT_TEMPLATE | llm | StrOutputParser()
 
 
+# 4b. Document classification — a separate, small prompt/chain
+#     from the answer-generation one above. Adding a category
+#     later is a one-line change to this list, nothing else.
+
+DOCUMENT_CATEGORIES = [
+    "HR",
+    "Legal & Compliance",
+    "Security & IT",
+    "Engineering & Product",
+    "Finance",
+    "Sales & Marketing",
+    "Operations & Facilities",
+    "Executive & Strategy",
+    "Other",
+]
+
+CLASSIFY_PROMPT_TEMPLATE = ChatPromptTemplate.from_template(
+    """
+Classify the following document into exactly ONE of these
+categories: {categories}.
+
+Base your answer only on the excerpt below. Respond with only the
+category name, exactly as written above — no punctuation, no
+explanation.
+
+Document excerpt:
+{text_sample}
+"""
+)
+
+classify_chain = (
+    CLASSIFY_PROMPT_TEMPLATE | llm | StrOutputParser()
+)
+
+
+def classify_document(text_sample: str) -> str:
+    """
+    Classify a document into one of DOCUMENT_CATEGORIES using a
+    small sample of its text (its first chunk is enough — a
+    document's title/opening paragraph reveals its subject
+    without needing to send the whole thing to the LLM).
+
+    Falls back to "Other" if the model's raw output doesn't
+    exactly match one of the known categories, so a bad/unknown
+    value never ends up stored as a category.
+    """
+
+    raw_result = classify_chain.invoke({
+        "categories": ", ".join(DOCUMENT_CATEGORIES),
+        "text_sample": text_sample,
+    })
+
+    category = raw_result.strip()
+
+    if category not in DOCUMENT_CATEGORIES:
+        return "Other"
+
+    return category
+
+
+# 4c. Document summarization — its own small prompt/chain,
+#     same shape as classification above.
+
+SUMMARIZE_PROMPT_TEMPLATE = ChatPromptTemplate.from_template(
+    """
+Summarize the following document in ONE sentence, focused on
+what it specifically covers. Do not use generic filler like
+"this document contains information about..." — state the
+actual subject directly.
+
+Document excerpt:
+{text_sample}
+"""
+)
+
+summarize_chain = (
+    SUMMARIZE_PROMPT_TEMPLATE | llm | StrOutputParser()
+)
+
+
+def summarize_document(text_sample: str) -> str:
+    """
+    Generate a one-sentence summary of a document using a small
+    sample of its text (its first chunk, same reasoning as
+    classify_document — the opening content is representative
+    enough without sending the whole document to the LLM).
+    """
+
+    summary = summarize_chain.invoke({
+        "text_sample": text_sample,
+    })
+
+    return summary.strip()
+
+
 # 5. Format prior turns for the prompt
 def format_chat_history(
     chat_history: list[dict] | None,
@@ -179,6 +272,8 @@ Chunk ID: {chunk["chunk_id"]}
 
 # 7. Run complete RAG pipeline
 if __name__ == "__main__":
+
+    from retriever import retrieve_documents
 
     question = input("\nAsk a question: ")
 

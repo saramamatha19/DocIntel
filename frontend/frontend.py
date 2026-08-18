@@ -120,13 +120,47 @@ def render_confidence(confidence):
 
     st.markdown(
         f'<div class="confidence-row">'
-        f'<span class="confidence-label">Confidence</span>'
+        f'<span class="confidence-label">Retrieval Confidence</span>'
         f'<div class="confidence-track">'
         f'<div class="confidence-fill {band}" '
         f'style="width:{percent}%"></div>'
         f'</div>'
         f'<span class="confidence-pct {band}">{percent}%</span>'
         f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# Document category badge. Adding a category later is a
+# one-line addition here — must stay in sync with
+# DOCUMENT_CATEGORIES in backend/call_llm.py.
+# ============================================================
+
+CATEGORY_COLORS = {
+    "HR": "#7A4FB0",
+    "Legal & Compliance": "#2A4B7C",
+    "Security & IT": "#A85C2E",
+    "Engineering & Product": "#00968C",
+    "Finance": "#1F8A5C",
+    "Sales & Marketing": "#C23B7A",
+    "Operations & Facilities": "#8A6D3B",
+    "Executive & Strategy": "#4B5468",
+    "Other": "#8A93A3",
+}
+
+
+def render_category_badge(category):
+
+    color = CATEGORY_COLORS.get(
+        category, CATEGORY_COLORS["Other"]
+    )
+
+    st.markdown(
+        f'<span style="background:{color}1A; color:{color}; '
+        f'padding:3px 10px; border-radius:6px; '
+        f'font-size:0.75rem; font-weight:700; '
+        f'white-space:nowrap;">{category}</span>',
         unsafe_allow_html=True,
     )
 
@@ -188,6 +222,13 @@ st.title("📚 DocIntel")
 st.write(
     "AI-powered document intelligence and RAG assistant"
 )
+
+# Summaries of documents uploaded this session, shown at the
+# top of the Chat tab (not the Documents tab) so they're the
+# first thing you see right after uploading, not something you
+# have to go find in a separate list.
+if "recent_uploads" not in st.session_state:
+    st.session_state.recent_uploads = []
 
 
 # Sidebar - Document Upload
@@ -254,6 +295,11 @@ if st.sidebar.button("Upload & Index"):
                             "detail": (
                                 f"{data['chunks_stored']} chunks"
                             ),
+                        })
+
+                        st.session_state.recent_uploads.append({
+                            "filename": uploaded_file.name,
+                            "summary": data.get("summary", ""),
                         })
 
                 else:
@@ -345,6 +391,11 @@ if st.sidebar.button("Download & Index"):
                     f"**Chunks:** {data['chunks_stored']}"
                 )
 
+                st.session_state.recent_uploads.append({
+                    "filename": data["filename"],
+                    "summary": data.get("summary", ""),
+                })
+
         else:
 
             st.sidebar.error(
@@ -369,6 +420,15 @@ tab_chat, tab_documents = st.tabs([
 with tab_chat:
 
     st.header("💬 Ask your documents")
+
+    # Show what's been uploaded this session, front and center,
+    # before you'd even think to ask a question about it.
+    for upload in st.session_state.recent_uploads:
+
+        st.info(
+            f"📄 **{upload['filename']}** — {upload['summary']}"
+        )
+
 
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
@@ -396,55 +456,57 @@ with tab_chat:
 
             render_confidence(turn["confidence"])
 
-            st.subheader("📑 Sources")
+            if turn["sources"]:
 
-            for index, source in enumerate(
-                turn["sources"],
-                start=1,
-            ):
+                st.subheader("📑 Sources")
 
-                with st.expander(
-                    f"Source {index}: "
-                    f"{source['document_name']} "
-                    f"(Page {source['page_number']})"
+                for index, source in enumerate(
+                    turn["sources"],
+                    start=1,
                 ):
 
-                    quoted_text = source["text"].replace(
-                        "\n", "\n> "
-                    )
+                    with st.expander(
+                        f"Source {index}: "
+                        f"{source['document_name']} "
+                        f"(Page {source['page_number']})"
+                    ):
 
-                    st.markdown(
-                        f"> {quoted_text}"
-                    )
-
-                    st.divider()
-
-                    st.write(
-                        f"**Document:** "
-                        f"{source['document_name']}"
-                    )
-
-                    st.write(
-                        f"**Page:** "
-                        f"{source['page_number']}"
-                    )
-
-                    st.write(
-                        f"**Content type:** "
-                        f"{source['content_type']}"
-                    )
-
-                    if "url" in source:
-
-                        st.write(
-                            f"**URL:** "
-                            f"{source['url']}"
+                        quoted_text = source["text"].replace(
+                            "\n", "\n> "
                         )
 
-                    st.write(
-                        f"**Chunk ID:** "
-                        f"{source['chunk_id']}"
-                    )
+                        st.markdown(
+                            f"> {quoted_text}"
+                        )
+
+                        st.divider()
+
+                        st.write(
+                            f"**Document:** "
+                            f"{source['document_name']}"
+                        )
+
+                        st.write(
+                            f"**Page:** "
+                            f"{source['page_number']}"
+                        )
+
+                        st.write(
+                            f"**Content type:** "
+                            f"{source['content_type']}"
+                        )
+
+                        if "url" in source:
+
+                            st.write(
+                                f"**URL:** "
+                                f"{source['url']}"
+                            )
+
+                        st.write(
+                            f"**Chunk ID:** "
+                            f"{source['chunk_id']}"
+                        )
 
 
     question = st.chat_input(
@@ -533,15 +595,20 @@ with tab_documents:
 
         for doc in documents_data["documents"]:
 
-            col1, col2, col3 = st.columns([5, 2, 1])
+            col1, col2, col3, col4 = st.columns([4, 2, 2, 1])
 
             with col1:
                 st.write(doc["document_name"])
 
             with col2:
-                st.write(f"{doc['chunks']} chunks")
+                render_category_badge(
+                    doc.get("category", "Other")
+                )
 
             with col3:
+                st.write(f"{doc['chunks']} chunks")
+
+            with col4:
 
                 if st.button(
                     "Delete",

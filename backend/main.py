@@ -1,4 +1,6 @@
 import hashlib
+import logging
+import time
 from pathlib import Path
 
 import requests
@@ -13,10 +15,40 @@ from chroma_db import (
     list_documents,
     delete_document,
     find_duplicate,
+    classify_and_summarize,
 )
 
 from retriever import retrieve_documents, compute_confidence
 from call_llm import call_llm, NO_ANSWER_MESSAGE
+
+
+# ============================================================
+# 0. Logging configuration
+#
+# Writes to a persistent file (docintel.log, in whatever
+# directory the server is run from) as well as the console, so
+# there's a real record of what happened after the terminal
+# that ran the server is gone — not just print() statements
+# visible only while it's running.
+# ============================================================
+
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("docintel.log"),
+        logging.StreamHandler(),
+    ],
+)
+
+# The root level above is WARNING so third-party libraries
+# (httpx logs every single OpenAI API call and every test
+# request at INFO level) don't flood the file — only this
+# app's own logger is turned up to actually be verbose.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+logger = logging.getLogger("docintel")
+logger.setLevel(logging.INFO)
 
 
 # ============================================================
@@ -104,6 +136,11 @@ async def upload_document(
 
     if duplicate_name:
 
+        logger.info(
+            f"Upload duplicate skipped: {file.filename} "
+            f"(already indexed as '{duplicate_name}')"
+        )
+
         return {
 
             "filename": file.filename,
@@ -129,9 +166,15 @@ async def upload_document(
         buffer.write(file_bytes)
 
     # Ingest PDF into ChromaDB
-    stored_chunks = ingest_document(
+    result = ingest_document(
         str(file_path),
         source_hash=source_hash,
+    )
+
+    logger.info(
+        f"Upload indexed: {file.filename} "
+        f"({result['chunks_stored']} chunks, "
+        f"category={result['category']})"
     )
 
     return {
@@ -147,7 +190,11 @@ async def upload_document(
 
         "document_type": "pdf",
 
-        "chunks_stored": stored_chunks,
+        "chunks_stored": result["chunks_stored"],
+
+        "category": result["category"],
+
+        "summary": result["summary"],
     }
 
 
@@ -185,6 +232,10 @@ def upload_document_from_url(
         response.raise_for_status()
 
     except requests.RequestException as exc:
+
+        logger.error(
+            f"URL download failed: {url} — {exc}"
+        )
 
         raise HTTPException(
             status_code=400,
@@ -232,6 +283,11 @@ def upload_document_from_url(
 
         if duplicate_name:
 
+            logger.info(
+                f"URL upload duplicate skipped: {url} "
+                f"(already indexed as '{duplicate_name}')"
+            )
+
             return {
 
                 "filename": filename,
@@ -260,9 +316,15 @@ def upload_document_from_url(
             )
 
         # Ingest PDF
-        stored_chunks = ingest_document(
+        result = ingest_document(
             str(file_path),
             source_hash=source_hash,
+        )
+
+        logger.info(
+            f"URL upload indexed: {url} "
+            f"({result['chunks_stored']} chunks, "
+            f"category={result['category']})"
         )
 
         return {
@@ -280,7 +342,11 @@ def upload_document_from_url(
                 "indexed successfully"
             ),
 
-            "chunks_stored": stored_chunks,
+            "chunks_stored": result["chunks_stored"],
+
+            "category": result["category"],
+
+            "summary": result["summary"],
         }
 
 
@@ -296,6 +362,11 @@ def upload_document_from_url(
         )
 
         if duplicate_name:
+
+            logger.info(
+                f"URL upload duplicate skipped: {url} "
+                f"(already indexed as '{duplicate_name}')"
+            )
 
             return {
 
@@ -327,6 +398,13 @@ def upload_document_from_url(
                 content
             )
 
+            # Classify + summarize (webpages don't go through
+            # process_document(), so this doesn't happen for
+            # them automatically the way it does for PDFs)
+            chunks = classify_and_summarize(
+                chunks
+            )
+
             # Store in ChromaDB
             # (embeddings are computed internally by the vectorstore)
             stored_chunks = store_chunks(
@@ -335,6 +413,10 @@ def upload_document_from_url(
 
         except Exception as exc:
 
+            logger.error(
+                f"Webpage processing failed: {url} — {exc}"
+            )
+
             raise HTTPException(
                 status_code=500,
                 detail=(
@@ -342,6 +424,12 @@ def upload_document_from_url(
                     f"{exc}"
                 )
             )
+
+        logger.info(
+            f"URL upload indexed: {url} "
+            f"({stored_chunks} chunks, "
+            f"category={chunks[0]['category'] if chunks else 'Other'})"
+        )
 
         return {
 
@@ -359,6 +447,14 @@ def upload_document_from_url(
             ),
 
             "chunks_stored": stored_chunks,
+
+            "category": (
+                chunks[0]["category"] if chunks else "Other"
+            ),
+
+            "summary": (
+                chunks[0]["summary"] if chunks else ""
+            ),
         }
 
 
@@ -411,6 +507,10 @@ def remove_document(
 
     if deleted_count == 0:
 
+        logger.warning(
+            f"Delete failed, not found: {document_name}"
+        )
+
         raise HTTPException(
             status_code=404,
             detail=(
@@ -418,6 +518,10 @@ def remove_document(
                 f"'{document_name}'"
             ),
         )
+
+    logger.info(
+        f"Deleted: {document_name} ({deleted_count} chunks)"
+    )
 
     return {
 
@@ -438,6 +542,8 @@ def ask_question(
     request: QuestionRequest
 ):
 
+    start_time = time.time()
+
     # --------------------------------------------------------
     # Step 1: Retrieve relevant chunks
     # --------------------------------------------------------
@@ -449,7 +555,45 @@ def ask_question(
 
 
     # --------------------------------------------------------
-    # Step 2: Send chunks to LLM
+    # Step 2: Guardrail — check confidence BEFORE calling the
+    # LLM. "Critical" band has, in every case tested, meant the
+    # question is genuinely unanswerable from this corpus — so
+    # skip the paid, slower LLM call entirely rather than paying
+    # for it just to get the same refusal back. "Warn" band is
+    # deliberately NOT short-circuited here: it's genuinely
+    # ambiguous (a borderline retrieval score can still lead to
+    # either a real answer or a refusal), so that judgment call
+    # is left to the LLM rather than guessed at from confidence
+    # alone.
+    # --------------------------------------------------------
+
+    confidence = compute_confidence(retrieved_chunks)
+
+    if confidence["band"] == "critical":
+
+        elapsed = time.time() - start_time
+
+        logger.info(
+            f"Ask (guardrail skipped LLM): "
+            f"{request.question!r} | "
+            f"confidence={confidence['percent']}% | "
+            f"{elapsed:.2f}s"
+        )
+
+        return {
+
+            "question": request.question,
+
+            "answer": NO_ANSWER_MESSAGE,
+
+            "sources": [],
+
+            "confidence": confidence,
+        }
+
+
+    # --------------------------------------------------------
+    # Step 3: Send chunks to LLM
     # --------------------------------------------------------
 
     answer = call_llm(
@@ -463,7 +607,7 @@ def ask_question(
 
 
     # --------------------------------------------------------
-    # Step 3: Prepare sources
+    # Step 4: Prepare sources
     # --------------------------------------------------------
 
     sources = []
@@ -500,15 +644,14 @@ def ask_question(
 
 
     # --------------------------------------------------------
-    # Step 4: Compute overall answer confidence
+    # Step 5: The LLM can still refuse even when retrieval
+    # wasn't confidently bad enough to skip calling it (e.g. a
+    # borderline "warn"-band retrieval). When that happens,
+    # correct the confidence and sources after the fact — they
+    # were computed from retrieval alone and don't know the LLM
+    # ended up finding nothing usable in them.
     # --------------------------------------------------------
 
-    confidence = compute_confidence(retrieved_chunks)
-
-    # Retrieval can score a chunk as a decent match even when the
-    # LLM correctly finds no real answer in it. When the entire
-    # answer is just that refusal, the confidence shown should
-    # reflect "no answer given," not the unrelated retrieval score.
     if answer.strip() == NO_ANSWER_MESSAGE:
 
         confidence = {
@@ -516,10 +659,22 @@ def ask_question(
             "band": "critical",
         }
 
+        sources = []
+
 
     # --------------------------------------------------------
-    # Step 5: Return answer + sources + confidence
+    # Step 6: Return answer + sources + confidence
     # --------------------------------------------------------
+
+    elapsed = time.time() - start_time
+
+    logger.info(
+        f"Ask (LLM called): "
+        f"{request.question!r} | "
+        f"confidence={confidence['percent']}% | "
+        f"sources={len(sources)} | "
+        f"{elapsed:.2f}s"
+    )
 
     return {
 
