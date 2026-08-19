@@ -1,0 +1,32 @@
+# Core backend
+fastapi==0.141.1
+uvicorn==0.52.1
+python-multipart==0.0.32
+pydantic==2.13.4
+python-dotenv==1.2.2
+requests==2.34.2
+
+# LLM / RAG orchestration
+langchain-core==1.5.3
+langchain-openai==1.4.3
+langchain-chroma==1.1.0
+langchain-huggingface==1.2.2
+langchain-text-splitters==1.1.2
+openai==2.53.0
+
+# Vector store + embeddings
+chromadb==1.5.9
+sentence-transformers==5.7.0
+numpy==2.5.2
+
+# Retrieval (hybrid search + reranking)
+rank-bm25==0.2.2
+
+# Document parsing
+pymupdf==1.28.2
+python-docx==1.2.0
+pytesseract==0.3.13
+pillow==12.3.0
+
+# Frontend
+streamlit==1.61.1
