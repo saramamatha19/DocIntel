@@ -328,14 +328,21 @@ def mmr_select(
 # 2. Convert a raw distance score into a 0-100 confidence value.
 #
 #    The floor/ceiling below are calibrated from real queries run
-#    against this project's data, not a theoretical formula:
-#    a clearly-relevant match scored ~0.37-0.73, while clearly
-#    irrelevant queries scored ~1.2-1.8. This is a *relative*
-#    retrieval-quality signal, not a calibrated probability that
-#    the answer is correct.
-
-CONFIDENCE_FLOOR = 0.3
-CONFIDENCE_CEILING = 1.8
+#    against this project's data, not a theoretical formula.
+#    Recalibrated 2026-08-19 after hybrid search + reranking + MMR
+#    were added: those stages can legitimately keep a chunk that
+#    ISN'T the single closest embedding match (that's the point of
+#    reranking), so confidence -- still based on real vector
+#    distance -- needed re-checking against the new pipeline's
+#    actual score distribution rather than assumed unchanged.
+#    A batch of 10 clearly-relevant and 10 clearly-irrelevant real
+#    queries run through hybrid_retrieve() showed relevant matches
+#    clustering at 0.37-0.72 (one genuine outlier at 0.98), and
+#    irrelevant ones clustering tightly at 1.49-1.75, with a clean,
+#    non-overlapping gap between the two groups. Floor/ceiling are
+#    set to fit that observed gap.
+CONFIDENCE_FLOOR = 0.35
+CONFIDENCE_CEILING = 1.5
 
 
 def score_to_confidence(distance: float) -> int:
