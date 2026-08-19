@@ -6,3 +6,5 @@ __pycache__/
 backend/uploads/*
 !backend/uploads/.gitkeep
 backend/*.log
+DocIntel_word.docx
+~$*.docx
