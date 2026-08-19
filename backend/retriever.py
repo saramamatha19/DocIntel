@@ -1,7 +1,9 @@
+import numpy as np
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
 
 from chroma_db import vectorstore
+from embedding import embeddings
 
 
 # 1. Retrieve relevant chunks, keeping each one's raw distance
@@ -218,7 +220,9 @@ def hybrid_retrieve(
 #     candidate to the query in isolation. Only run over the
 #     already-narrowed pool from hybrid_retrieve (not the whole
 #     collection), since it's too slow to run on every chunk in
-#     the corpus for every query.
+#     the corpus for every query. The final top_k pick is handed
+#     off to mmr_select() below, rather than just taking the
+#     highest-scored top_k directly.
 
 reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
@@ -239,16 +243,86 @@ def rerank(
 
     relevance_scores = reranker.predict(pairs)
 
-    ranked = sorted(
-        zip(candidates, relevance_scores),
-        key=lambda pair: pair[1],
-        reverse=True,
+    return mmr_select(candidates, relevance_scores, top_k)
+
+
+# 1d. Maximal Marginal Relevance (MMR): picks the final top_k from
+#     the reranked pool by balancing relevance against redundancy,
+#     so near-duplicate chunks (the same clause repeated across
+#     multiple documents) don't crowd out genuinely different
+#     supporting information. Picks the single most relevant chunk
+#     first; each subsequent pick trades off relevance against how
+#     similar it is to chunks already chosen, measured with the
+#     same embedding model used everywhere else in retrieval
+#     (already unit-normalized, so a plain dot product IS cosine
+#     similarity — no extra normalization needed).
+
+MMR_LAMBDA = 0.7
+
+
+def mmr_select(
+    candidates: list[dict],
+    relevance_scores,
+    top_k: int,
+    lambda_param: float = MMR_LAMBDA,
+) -> list[dict]:
+
+    if not candidates:
+        return candidates
+
+    candidate_vectors = np.array(
+        embeddings.embed_documents(
+            [candidate["text"] for candidate in candidates]
+        )
     )
 
-    return [
-        candidate
-        for candidate, _relevance_score in ranked[:top_k]
-    ]
+    scores = np.array(relevance_scores, dtype=float)
+    score_range = scores.max() - scores.min()
+
+    # Cross-encoder scores aren't on a fixed scale, so they're
+    # min-max normalized to 0-1 within this candidate pool before
+    # being blended with cosine similarity (also 0-1-ish) — same
+    # reasoning as using RANK instead of raw score for RRF fusion
+    # earlier: two differently-scaled signals can't be blended
+    # directly.
+    normalized_relevance = (
+        (scores - scores.min()) / score_range
+        if score_range > 0
+        else np.ones_like(scores)
+    )
+
+    remaining_indices = list(range(len(candidates)))
+    selected_indices = []
+
+    while remaining_indices and len(selected_indices) < top_k:
+
+        if not selected_indices:
+
+            best_index = max(
+                remaining_indices,
+                key=lambda i: normalized_relevance[i],
+            )
+
+        else:
+
+            def mmr_score(i):
+
+                similarity_to_selected = max(
+                    candidate_vectors[i] @ candidate_vectors[j]
+                    for j in selected_indices
+                )
+
+                return (
+                    lambda_param * normalized_relevance[i]
+                    - (1 - lambda_param) * similarity_to_selected
+                )
+
+            best_index = max(remaining_indices, key=mmr_score)
+
+        selected_indices.append(best_index)
+        remaining_indices.remove(best_index)
+
+    return [candidates[i] for i in selected_indices]
 
 
 # 2. Convert a raw distance score into a 0-100 confidence value.
