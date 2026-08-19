@@ -221,6 +221,52 @@ def format_chat_history(
     return "\n".join(lines)
 
 
+# 5b. Rewrite a follow-up question into a standalone one, using
+#     prior turns, so retrieval (which never sees the conversation
+#     itself, only whatever string it's given) can actually find
+#     relevant chunks for a question like "what about their
+#     pricing?" instead of embedding "their pricing" literally.
+
+REWRITE_QUERY_PROMPT_TEMPLATE = ChatPromptTemplate.from_template(
+    """
+Given the conversation so far and a new follow-up question,
+rewrite the follow-up into a standalone question that includes
+whatever it implicitly refers to (e.g. a company or topic named
+earlier).
+
+- If the follow-up is already standalone and doesn't rely on the
+  conversation to make sense, return it EXACTLY unchanged.
+- Only rewrite the question. Do not answer it, and do not add
+  information beyond what the conversation already established.
+
+Conversation so far (most recent last):
+{chat_history}
+
+Follow-up question:
+{question}
+
+Standalone question:
+"""
+)
+
+rewrite_query_chain = (
+    REWRITE_QUERY_PROMPT_TEMPLATE | llm | StrOutputParser()
+)
+
+
+def rewrite_query_with_history(
+    question: str,
+    chat_history: list[dict] | None,
+) -> str:
+
+    rewritten = rewrite_query_chain.invoke({
+        "question": question,
+        "chat_history": format_chat_history(chat_history),
+    })
+
+    return rewritten.strip()
+
+
 # 6. Call LLM with retrieved documents
 def call_llm(
     question: str,

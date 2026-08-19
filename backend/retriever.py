@@ -1,4 +1,5 @@
 from rank_bm25 import BM25Okapi
+from sentence_transformers import CrossEncoder
 
 from chroma_db import vectorstore
 
@@ -96,6 +97,7 @@ def retrieve_documents(
 
 RRF_K = 60
 FUSION_POOL_SIZE = 20
+RERANK_POOL_SIZE = 20
 
 
 def hybrid_retrieve(
@@ -182,9 +184,9 @@ def hybrid_retrieve(
         candidate_ids,
         key=rrf_score,
         reverse=True,
-    )[:top_k]
+    )[:RERANK_POOL_SIZE]
 
-    retrieved_chunks = []
+    candidate_chunks = []
 
     for chunk_id in fused_ids:
 
@@ -203,9 +205,50 @@ def hybrid_retrieve(
         if "url" in metadata:
             chunk["url"] = metadata["url"]
 
-        retrieved_chunks.append(chunk)
+        candidate_chunks.append(chunk)
 
-    return retrieved_chunks
+    return rerank(query, candidate_chunks, top_k)
+
+
+# 1c. Rerank the fused candidate pool with a cross-encoder: a
+#     small model that reads the query and a chunk's text
+#     TOGETHER and scores how well that specific chunk answers
+#     that specific question — a more precise (but slower) signal
+#     than rank position alone, which only ever compares each
+#     candidate to the query in isolation. Only run over the
+#     already-narrowed pool from hybrid_retrieve (not the whole
+#     collection), since it's too slow to run on every chunk in
+#     the corpus for every query.
+
+reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+
+def rerank(
+    query: str,
+    candidates: list[dict],
+    top_k: int,
+) -> list[dict]:
+
+    if not candidates:
+        return candidates
+
+    pairs = [
+        (query, candidate["text"])
+        for candidate in candidates
+    ]
+
+    relevance_scores = reranker.predict(pairs)
+
+    ranked = sorted(
+        zip(candidates, relevance_scores),
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
+
+    return [
+        candidate
+        for candidate, _relevance_score in ranked[:top_k]
+    ]
 
 
 # 2. Convert a raw distance score into a 0-100 confidence value.

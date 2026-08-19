@@ -26,6 +26,7 @@ from call_llm import (
     call_llm,
     compare_answer,
     compare_document_versions,
+    rewrite_query_with_history,
     NO_ANSWER_MESSAGE,
 )
 
@@ -606,6 +607,44 @@ def run_ask_pipeline(request: QuestionRequest):
 
     start_time = time.time()
 
+    chat_history_dicts = [
+        turn.model_dump()
+        for turn in request.chat_history
+    ]
+
+    # ----------------------------------------------------------
+    # Step 0: Rewrite follow-up questions into standalone ones
+    # BEFORE retrieval. Chat history was already used for the
+    # final answer, but never for retrieval itself — so a
+    # follow-up like "what about their pricing?" would search
+    # using that literal text, with no idea what "their" means.
+    # Skipped entirely on a first question, since there's nothing
+    # yet to resolve against.
+    # ----------------------------------------------------------
+
+    if chat_history_dicts:
+
+        search_question = rewrite_query_with_history(
+            request.question,
+            chat_history_dicts,
+        )
+
+    else:
+        search_question = request.question
+
+    rewritten_note = (
+        f"rewritten={search_question!r} | "
+        if search_question != request.question
+        else ""
+    )
+
+    if rewritten_note:
+
+        yield stream_ndjson({
+            "type": "status",
+            "message": f'Interpreting as: "{search_question}"',
+        })
+
     # ----------------------------------------------------------
     # Step 1: Retrieve relevant chunks
     # ----------------------------------------------------------
@@ -616,7 +655,7 @@ def run_ask_pipeline(request: QuestionRequest):
     })
 
     retrieved_chunks = hybrid_retrieve(
-        request.question,
+        search_question,
         top_k=5,
     )
 
@@ -652,6 +691,7 @@ def run_ask_pipeline(request: QuestionRequest):
         logger.info(
             f"Ask (guardrail skipped LLM): "
             f"{request.question!r} | "
+            f"{rewritten_note}"
             f"confidence={confidence['percent']}% | "
             f"{elapsed:.2f}s"
         )
@@ -687,12 +727,9 @@ def run_ask_pipeline(request: QuestionRequest):
     })
 
     answer = call_llm(
-        request.question,
+        search_question,
         retrieved_chunks,
-        chat_history=[
-            turn.model_dump()
-            for turn in request.chat_history
-        ],
+        chat_history=chat_history_dicts,
     )
 
 
@@ -779,6 +816,7 @@ def run_ask_pipeline(request: QuestionRequest):
     logger.info(
         f"Ask (LLM called): "
         f"{request.question!r} | "
+        f"{rewritten_note}"
         f"confidence={confidence['percent']}% | "
         f"sources={len(sources)} | "
         f"{elapsed:.2f}s"
