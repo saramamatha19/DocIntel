@@ -20,7 +20,7 @@ Most RAG walkthroughs stop at "embed the query, grab the top-k chunks, ask an LL
 | No sense of "was this a good answer?" | **Calibrated confidence scoring**, empirically tuned against real relevant/irrelevant queries — with a pre-LLM-call guardrail that skips the (paid) generation step entirely when retrieval confidence is too low |
 | One document pile | **Multi-company organization** + a **Compare** feature for both company-vs-company Q&A and document-vs-document "what changed" diffing |
 
-Every one of these was implemented against a real, reproduced failure case, not a hypothetical one — and every limitation still on the table is documented, not hidden (see [Engineering notes](#engineering-notes) below).
+Every one of these was implemented against a real, reproduced failure case, not a hypothetical one — see [Design decisions & tradeoffs](#design-decisions--tradeoffs) for how a few of the harder calls were made.
 
 ---
 
@@ -196,18 +196,12 @@ frontend/
 
 ---
 
-## Engineering notes
+## Design decisions & tradeoffs
 
-A few honest notes, because a project that pretends to have no edges is less trustworthy than one that names them:
+- Dependency footprint was kept deliberately lean — e.g. regex-based PII detection instead of a full NER model, and a lightweight BM25 library instead of a heavier retrieval framework.
+- Confidence scoring is empirically calibrated against real test queries, and was re-validated after adding reranking and MMR rather than assumed to still hold.
+- Guardrails run in two stages, before and after the LLM call, so low-confidence questions never trigger an unnecessary paid generation step.
 
-- **Hybrid search and reranking measurably help, but don't fix everything.** One known case — a webpage whose content is short marketing copy sitting alongside long, keyword-dense legal PDFs — still loses out on both vector similarity *and* BM25 keyword density, because the PDFs simply repeat the relevant words more often. Reranking can only reorder whatever hybrid search's fusion stage already shortlisted; it can't rescue a candidate that never made the shortlist. This is a corpus-composition limitation, not a bug, and it's a genuinely interesting one to talk through.
-- **Guardrails were built as two layers on purpose**: a pre-LLM-call check (skip generation entirely when retrieval confidence is critical, saving real API cost) and a post-call cleanup (in case the LLM refuses anyway on a borderline "warn"-band retrieval). Confidence isn't guessed at from the answer — it's computed from retrieval before the LLM is ever called.
-- **Dependency footprint was a first-class design constraint**, not an afterthought — a full NER model was skipped for PII detection (regex covers emails/passwords reliably; names would need real training data to do responsibly), and the full `ragas` evaluation package was avoided because it pulls in a heavy, version-conflicting dependency tree for a project this size.
-- **Confidence scoring was recalibrated after adding reranking and MMR, not assumed to still be correct.** The original floor/ceiling were calibrated against plain vector search, where the reported score is always the single closest chunk in the whole corpus. Reranking and MMR can deliberately keep a chunk that *isn't* the closest embedding match — that's the point of reranking — so that assumption no longer strictly held. A batch of 20 real relevant/irrelevant test queries run through the new pipeline confirmed a measurable drift (one borderline query flipped from "good" to "warn" band), and the floor/ceiling were re-derived from the actual observed score distribution rather than left unchanged on faith. Irrelevant-query confidence dropped from as high as 20% to consistently 0-1% as a result.
+## What's next
 
-## Roadmap
-
-- RAGAS-style automated evaluation (via a lightweight custom harness, pending a decision on the full package's dependency weight)
-- Dedicated multi-document reasoning (scope still being decided — `/ask` and Compare may already cover most of it)
-- AI-suggested follow-up questions
-- An analytics dashboard over asked questions and confidence trends
+Automated retrieval evaluation, AI-suggested follow-up questions, and a usage analytics dashboard.
