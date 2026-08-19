@@ -1,3 +1,5 @@
+from rank_bm25 import BM25Okapi
+
 from chroma_db import vectorstore
 
 
@@ -65,6 +67,139 @@ def retrieve_documents(
         }
 
         # Preserve webpage URL if available
+        if "url" in metadata:
+            chunk["url"] = metadata["url"]
+
+        retrieved_chunks.append(chunk)
+
+    return retrieved_chunks
+
+
+# 1b. Hybrid retrieval: combine vector search with BM25 keyword
+#     search via Reciprocal Rank Fusion (RRF), so a chunk that
+#     matches on exact keywords but only scores mediocre on
+#     embedding similarity can still surface. This is what fixed
+#     the reproduced failure case where a webpage chunk containing
+#     the literal words "Atlassian" and "software" wasn't being
+#     retrieved by vector search alone.
+#
+#     RRF combines *rank position* from each method rather than
+#     raw scores, since embedding distances and BM25 scores are on
+#     incompatible scales and can't be blended directly.
+#
+#     Confidence is still derived from each chunk's real vector
+#     distance (looked up from the same full vector search used
+#     for fusion), regardless of whether vector search or BM25 is
+#     what actually surfaced it into the final top_k — this reuses
+#     the existing, already-calibrated confidence system instead of
+#     needing a second calibration for RRF's own score scale.
+
+RRF_K = 60
+FUSION_POOL_SIZE = 20
+
+
+def hybrid_retrieve(
+    query: str,
+    top_k: int = 5,
+    company: str | None = None,
+) -> list[dict]:
+
+    total_chunks = vectorstore._collection.count()
+
+    all_vector_results = vectorstore.similarity_search_with_score(
+        query,
+        k=total_chunks,
+    )
+
+    if company:
+
+        all_vector_results = [
+            (document, distance)
+            for document, distance in all_vector_results
+            if document.metadata.get("company") == company
+        ]
+
+    documents_by_id = {
+        document.id: document
+        for document, _distance in all_vector_results
+    }
+
+    distance_by_id = {
+        document.id: distance
+        for document, distance in all_vector_results
+    }
+
+    vector_rank_by_id = {
+        document.id: rank
+        for rank, (document, _distance) in enumerate(
+            all_vector_results[:FUSION_POOL_SIZE],
+            start=1,
+        )
+    }
+
+    # BM25 keyword search over the same (possibly company-scoped)
+    # corpus. Rebuilt fresh on every call — the corpus is small
+    # enough (low hundreds of chunks) that this is cheap, and it
+    # avoids having to keep a cached index in sync with ingestion.
+    corpus_ids = list(documents_by_id.keys())
+
+    tokenized_corpus = [
+        documents_by_id[chunk_id].page_content.lower().split()
+        for chunk_id in corpus_ids
+    ]
+
+    bm25 = BM25Okapi(tokenized_corpus)
+
+    bm25_scores = bm25.get_scores(
+        query.lower().split()
+    )
+
+    bm25_ranked_ids = [
+        corpus_ids[i]
+        for i in bm25_scores.argsort()[::-1]
+    ][:FUSION_POOL_SIZE]
+
+    bm25_rank_by_id = {
+        chunk_id: rank
+        for rank, chunk_id in enumerate(bm25_ranked_ids, start=1)
+    }
+
+    candidate_ids = set(vector_rank_by_id) | set(bm25_rank_by_id)
+
+    def rrf_score(chunk_id: str) -> float:
+
+        score = 0.0
+
+        if chunk_id in vector_rank_by_id:
+            score += 1 / (RRF_K + vector_rank_by_id[chunk_id])
+
+        if chunk_id in bm25_rank_by_id:
+            score += 1 / (RRF_K + bm25_rank_by_id[chunk_id])
+
+        return score
+
+    fused_ids = sorted(
+        candidate_ids,
+        key=rrf_score,
+        reverse=True,
+    )[:top_k]
+
+    retrieved_chunks = []
+
+    for chunk_id in fused_ids:
+
+        document = documents_by_id[chunk_id]
+        metadata = document.metadata
+
+        chunk = {
+            "chunk_id": chunk_id,
+            "text": document.page_content,
+            "document_name": metadata["document_name"],
+            "page_number": metadata["page_number"],
+            "content_type": metadata["content_type"],
+            "score": distance_by_id[chunk_id],
+        }
+
         if "url" in metadata:
             chunk["url"] = metadata["url"]
 

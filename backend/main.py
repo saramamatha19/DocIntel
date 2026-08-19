@@ -21,7 +21,7 @@ from chroma_db import (
     get_document_chunks,
 )
 
-from retriever import retrieve_documents, compute_confidence
+from retriever import retrieve_documents, hybrid_retrieve, compute_confidence
 from call_llm import (
     call_llm,
     compare_answer,
@@ -615,7 +615,7 @@ def run_ask_pipeline(request: QuestionRequest):
         "message": "Retrieving relevant documents...",
     })
 
-    retrieved_chunks = retrieve_documents(
+    retrieved_chunks = hybrid_retrieve(
         request.question,
         top_k=5,
     )
