@@ -106,7 +106,14 @@ def hybrid_retrieve(
     query: str,
     top_k: int = 5,
     company: str | None = None,
+    document_name: str | None = None,
 ) -> list[dict]:
+    """
+    document_name, when given, scopes the search to only that
+    one document's chunks -- used by the Chat tab's document-scope
+    dropdown, so a question can be answered from a specific
+    uploaded file instead of competing against the whole corpus.
+    """
 
     total_chunks = vectorstore._collection.count()
 
@@ -122,6 +129,21 @@ def hybrid_retrieve(
             for document, distance in all_vector_results
             if document.metadata.get("company") == company
         ]
+
+    if document_name:
+
+        all_vector_results = [
+            (document, distance)
+            for document, distance in all_vector_results
+            if document.metadata.get("document_name") == document_name
+        ]
+
+    # BM25Okapi crashes on an empty corpus (division by zero
+    # inside the library itself), which is reachable whenever
+    # there's nothing to search -- an empty database, a company
+    # filter, or a document filter matching zero chunks.
+    if not all_vector_results:
+        return []
 
     documents_by_id = {
         document.id: document

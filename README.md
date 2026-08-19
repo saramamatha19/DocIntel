@@ -65,6 +65,7 @@ flowchart LR
 - Cross-encoder reranking (`cross-encoder/ms-marco-MiniLM-L-6-v2`, runs locally, zero API cost)
 - MMR diversity selection to reduce redundant sources
 - Conversational query rewriting for pronoun/context-dependent follow-ups
+- Document-scoped search — an "Ask about" dropdown to search one specific document instead of the whole corpus, so a vague question like "what is this about" doesn't have to guess which document you mean
 
 **Trust and safety**
 - Two-layer confidence guardrail: skips the LLM call entirely on clearly unanswerable questions, and cleans up the display if the LLM refuses anyway
@@ -157,7 +158,7 @@ Streamlit will open the app in your browser.
 ## Using it
 
 1. **Upload** — go to the Chat tab's sidebar, set a company name, and drop in a PDF, DOCX, TXT, or MD file (or paste a URL). You'll see an auto-generated category and summary immediately.
-2. **Ask** — type a question. Watch the live status trace show retrieval, confidence, and generation as they actually happen. Ask a pronoun-based follow-up ("what about their...?") and see it get resolved before retrieval runs.
+2. **Ask** — pick "General" or a specific document from the "Ask about" dropdown, then type a question. Watch the live status trace show retrieval, confidence, and generation as they actually happen. Ask a pronoun-based follow-up ("what about their...?") and see it get resolved before retrieval runs.
 3. **Inspect** — hover any `[N]` citation to see the exact source passage it came from; check the confidence meter to gauge how grounded the answer is.
 4. **Manage** — the Documents tab lists everything indexed, grouped by company, with one-click delete.
 5. **Compare** — the Compare tab lets you either ask one question across two companies, or diff two specific document versions directly.
@@ -201,7 +202,10 @@ frontend/
 - Dependency footprint was kept deliberately lean — e.g. regex-based PII detection instead of a full NER model, and a lightweight BM25 library instead of a heavier retrieval framework.
 - Confidence scoring is empirically calibrated against real test queries, and was re-validated after adding reranking and MMR rather than assumed to still hold.
 - Guardrails run in two stages, before and after the LLM call, so low-confidence questions never trigger an unnecessary paid generation step.
+- The guardrail adapts to search scope — it only blocks generation for whole-corpus questions. When a specific document is chosen, a low score just means the wording doesn't closely match one chunk, not that the answer is missing, so the LLM still gets asked.
 
-## What's next
+---
 
-Automated retrieval evaluation, AI-suggested follow-up questions, and a usage analytics dashboard.
+## License
+
+[MIT](LICENSE)

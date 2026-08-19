@@ -488,7 +488,23 @@ with tab_chat:
                 unsafe_allow_html=True,
             )
 
-            render_confidence(turn["confidence"])
+            if turn.get("scope_document"):
+
+                # Confidence is calibrated for whole-corpus search,
+                # where a low score means "probably not in here at
+                # all." Scoped to one document, a low score just
+                # means the question's wording doesn't closely
+                # match any single chunk -- not that the answer is
+                # missing (confirmed directly: the LLM answers
+                # correctly here even at single-digit scores). That
+                # number would only read as alarming, not useful.
+                st.caption(
+                    f"📄 Answered from: {turn['scope_document']}"
+                )
+
+            else:
+
+                render_confidence(turn["confidence"])
 
             if turn["sources"]:
 
@@ -543,6 +559,37 @@ with tab_chat:
                         )
 
 
+    # Ask about one specific document, or the whole corpus -- an
+    # explicit choice instead of trying to guess it from vague
+    # questions like "what is this about", which have no reliable
+    # way to infer what "this" means on their own.
+    ASK_GENERAL_OPTION = "🌐 General (all documents)"
+
+    chat_documents_response = requests.get(
+        f"{API_URL}/documents",
+        timeout=30,
+    )
+
+    chat_document_names = (
+        sorted(
+            doc["document_name"]
+            for doc in chat_documents_response.json()["documents"]
+        )
+        if chat_documents_response.ok
+        else []
+    )
+
+    ask_scope = st.selectbox(
+        "Ask about",
+        [ASK_GENERAL_OPTION] + chat_document_names,
+    )
+
+    scope_document = (
+        None
+        if ask_scope == ASK_GENERAL_OPTION
+        else ask_scope
+    )
+
     question = st.chat_input(
         "Enter your question here..."
     )
@@ -577,6 +624,7 @@ with tab_chat:
                             }
                             for turn in st.session_state.chat_history
                         ],
+                        "document": scope_document,
                     },
                     timeout=120,
                     stream=True,
@@ -627,6 +675,7 @@ with tab_chat:
                     "answer": final_result["answer"],
                     "sources": final_result["sources"],
                     "confidence": final_result["confidence"],
+                    "scope_document": scope_document,
                     "steps": steps,
                 })
 

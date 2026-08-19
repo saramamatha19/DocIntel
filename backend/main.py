@@ -101,6 +101,7 @@ class ChatTurn(BaseModel):
 class QuestionRequest(BaseModel):
     question: str
     chat_history: list[ChatTurn] = []
+    document: str | None = None
 
 
 class URLRequest(BaseModel):
@@ -191,6 +192,14 @@ async def upload_document(
 
             "chunks_stored": 0,
         }
+
+    # Re-uploading the same filename with DIFFERENT content (e.g.
+    # an edited policy) is a content update, not a duplicate --
+    # find_duplicate() above already ruled out an exact-content
+    # match. Without this, the old chunks would stick around
+    # alongside the new ones under the same document_name if the
+    # new version has fewer chunks than the old one.
+    delete_document(file.filename)
 
     # Create file path
     file_path = UPLOAD_DIR / file.filename
@@ -657,6 +666,7 @@ def run_ask_pipeline(request: QuestionRequest):
     retrieved_chunks = hybrid_retrieve(
         search_question,
         top_k=5,
+        document_name=request.document,
     )
 
 
@@ -684,7 +694,19 @@ def run_ask_pipeline(request: QuestionRequest):
         ),
     })
 
-    if confidence["band"] == "critical":
+    # The critical-band guardrail is calibrated for whole-corpus
+    # search, where a low score means "probably not in this corpus
+    # at all." When the user has explicitly scoped to one document,
+    # relevance is already guaranteed by that choice -- a low score
+    # there just means the query's wording doesn't closely match
+    # any one chunk, not that the answer is missing (confirmed
+    # directly: the LLM answered correctly from scoped chunks even
+    # at 2% confidence). So the guardrail only short-circuits the
+    # LLM call for unscoped, whole-corpus questions.
+    if (
+        confidence["band"] == "critical"
+        and (not request.document or not retrieved_chunks)
+    ):
 
         elapsed = time.time() - start_time
 
